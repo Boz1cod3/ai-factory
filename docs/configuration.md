@@ -31,6 +31,7 @@
         "plan-coordinator.md",
         "plan-polisher.md",
         "review-sidecar.md",
+        "review-validator.md",
         "rules-sidecar.md",
         "security-sidecar.md"
       ],
@@ -57,6 +58,7 @@
         "plan-coordinator.toml",
         "plan-polisher.toml",
         "review-sidecar.toml",
+        "review-validator.toml",
         "security-sidecar.toml"
       ],
       "installedConfigFiles": ["config.toml"],
@@ -351,6 +353,7 @@ your-project/
 │   │   ├── plan-coordinator.md
 │   │   ├── plan-polisher.md
 │   │   ├── review-sidecar.md
+│   │   ├── review-validator.md
 │   │   ├── rules-sidecar.md
 │   │   └── security-sidecar.md
 │   ├── skills/

@@ -535,7 +535,7 @@ Reviews staged changes or PR diffs:
 - If you only need the rules gate, use `/aif-rules-check`
 
 **Optional validation (`+check`)**
-- After the review is drafted the skill dispatches a single fresh-context `general-purpose` subagent that re-reads cited files and judges each item from "Critical Issues" and "Suggestions"
+- After the review is drafted the skill dispatches a single fresh-context `review-validator` subagent — allowlisted to `Read`, `Glob`, `Grep` — that re-reads cited files and judges each item from "Critical Issues" and "Suggestions". The prompt embeds the reviewed diff verbatim, so the read-only boundary is a tool restriction, not a prompt instruction; when markers made the pass automatic and that agent is unavailable, nothing is dispatched and the gate reports the validation failure
 - Invented findings are dropped, partially-correct ones are rewritten in place, real findings stay untouched — except confirmed marked findings, which come back through `modify` with the confidence marker removed
 - Only actionable code findings are validated: context-gate findings, commit-structure findings, "Questions", and "Positive Notes" are not — the validator judges items against the reviewed diff, which is not evidence for those classes
 - The subagent can also reclassify items between the two severity levels — promote a suggestion to "Critical Issues" if the underlying behavior is actually merge-blocking, or demote a critical finding to "Suggestions" if the framing was too harsh. The two levels and the promotion/demotion rules live in `references/SEVERITY.md`

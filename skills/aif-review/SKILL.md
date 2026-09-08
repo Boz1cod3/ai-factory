@@ -137,10 +137,10 @@ This section is the single owner of `aif-gate-result` computation:
   - **context-gate input** — `fail` for a blocking (`ERROR`) gate finding; `warn` for a non-blocking (`WARN`) one; `pass` when none.
   - A failing context gate keeps `"status"` at `fail` even with zero Critical Issues — a clean findings list must never mask a failed gate.
 - **No unresolved markers reach the gate.** The projection expects marker-free findings: a `(confidence: low)` / `(confidence: medium)` marker is resolved by the validation pass *before* the gate is computed — see "Resolving markers before the gate" below. Schema v1 has no encoding for "unverified potential blocker", and the gate never tries to express one (`warn` + `command: null` is not a state, it is a bug).
-- **An unresolved marker is a validation failure, and the gate reports the failure itself.** If a marked finding still carries its marker when the gate is computed — the validation pass was dispatched and did not resolve it: per-item contract violation, malformed per-item response, or whole-dispatch failure (`references/CHECK-MODE.md`, Failure modes) — the review did not complete, and the block says so in the machine-readable fields, not only in the `WARN [+check]` line:
+- **An unresolved marker is a validation failure, and the gate reports the failure itself.** If a marked finding still carries its marker when the gate is computed — the validation pass was dispatched and did not resolve it: per-item contract violation, malformed per-item response, or whole-dispatch failure (`references/CHECK-MODE.md`, Failure modes) — the review did not complete. The same holds for a finding whose response was rejected for trying to *attach* a marker: the item is published in its original, unmarked form, so the gate cannot see the failure in the text and must be told about it. Either way the block says so in the machine-readable fields, not only in the `WARN [+check]` line:
   - `"status": "fail"`, `"blocking": true`;
-  - `"blockers"` gains exactly one synthetic entry `{"id": "review-validation-failed", "severity": "error", "summary": "<N> marked finding(s) left unresolved: <cause>"}`, alongside the established blockers (below);
-  - the unresolved findings stay in their human-readable sections with their markers, but are **not** established blockers and never appear in `"blockers"` — the gate does not guess whether they are real;
+  - `"blockers"` gains exactly one synthetic entry `{"id": "review-validation-failed", "severity": "error", "summary": "<N> finding(s) left unvalidated: <cause>"}`, alongside the established blockers (below). `<cause>` is taken from the `WARN [+check]` line, which every failure path emits — a failure with an empty cause means a path skipped its `WARN` and is a bug in the pass, not a publishable gate;
+  - findings still carrying a marker stay in their human-readable sections with it, but are **not** established blockers and never appear in `"blockers"` — the gate does not guess whether they are real. A finding published in its original unmarked form is an ordinary established finding and projects normally; only the synthetic entry records that its validation failed;
   - `"suggested_next.command"` is `null` and the reason names the failure and the recovery: re-run `/aif-review +check`. That command is not on the allowlist, so `null` is the only honest value; the block is already `fail` + `blocking`, so no orchestrator can read `null` as "cleared".
 - `"blocking": true|false` — `true` only when `"status"` is `fail`.
 - `"blockers"` — established merge-blocking findings only: every "Critical Issues" item that carries no confidence marker (after a successful validation pass that is every item), every blocking context-gate finding, plus the `review-validation-failed` entry when validation failed — nothing else.
@@ -150,6 +150,8 @@ This section is the single owner of `aif-gate-result` computation:
 ### Resolving markers before the gate
 
 A review that produced at least one `(confidence: low)` / `(confidence: medium)` marker runs the `+check` validation automatically, even when the flag was not given. The flag stays opt-in for everything else: a review with no markers behaves exactly as before and dispatches nothing.
+
+The automatic dispatch is bounded by capability, not by trust in the input. The pass runs as `review-validator`, a bundled agent allowlisted to `Read`, `Glob`, `Grep`, because its prompt embeds the diff verbatim and a PR diff is untrusted content — an unflagged run must never widen the tool set that the change under review can reach. If that agent is unavailable, an automatic run does not dispatch at all: it reports the whole-dispatch failure and the resulting `review-validation-failed` gate. Only an explicit `+check` may fall back to a full-tool agent, and it says so in a `WARN` line (`references/CHECK-MODE.md`, Procedure step 4).
 
 - Every marked finding is either **confirmed** — the validator returns it without the marker, and it counts as an ordinary finding of its section (a confirmed critical is a blocker and drives `fail`) — or **refuted** and dropped.
 - The gate is then computed from the post-validation findings, so the published block never contains a marker and never needs a state schema v1 cannot express.
@@ -328,7 +330,7 @@ The failure block, for a review whose only marked critical could not be validate
     {
       "id": "review-validation-failed",
       "severity": "error",
-      "summary": "1 marked finding left unresolved: validator response for item 1 violated the marked-item contract"
+      "summary": "1 finding left unvalidated: validator response for item 1 violated the marked-item contract"
     }
   ],
   "affected_files": ["src/payments/retry.ts"],

@@ -60,7 +60,7 @@ assert_lacks_text() {
 }
 
 has_marker() {
-    printf '%s' "$1" | grep -Eq '\(confidence: (low|medium)\)'
+    printf '%s' "$1" | grep -Eq '\(confidence: (low|medium)\)[[:space:]]*$'
 }
 
 # ---------------------------------------------------------------------------
@@ -70,8 +70,8 @@ has_marker() {
 # Inputs:
 #   ITEM_TEXT[n]     — finding text as drafted by the review
 #   ITEM_SECTION[n]  — critical | suggestion
-#   response file    — stubbed validator output, or the literal string
-#                      DISPATCH_FAILURE to model a whole-dispatch failure
+#   response file    — stubbed validator output, or `DISPATCH_FAILURE` /
+#                      `DISPATCH_FAILURE: <reason>` for a whole-dispatch failure
 #
 # Outputs (globals):
 #   OUT_TEXT[n] / OUT_SECTION[n]  — surviving findings
@@ -79,22 +79,42 @@ has_marker() {
 #   OUT_FILTERED                  — the "Filtered:" line, or empty
 #   GATE_STATUS / GATE_BLOCKING / GATE_BLOCKERS / GATE_COMMAND / GATE_REASON
 #   GATE_VALIDATION_FAILED        — 1 when a marker survived the pass
+#
+# project_gate takes the context-gate result: its status (pass|warn|fail), and
+# when failing its id (rules|architecture|roadmap) plus the blocking finding.
 
 apply_validation() {
     local response_file="$1"
     local count="$2"
 
     OUT_TEXT=(); OUT_SECTION=(); OUT_WARNINGS=""; OUT_FILTERED=""
+    UNVALIDATED_ITEMS=0
     local hidden=0 adjusted=0 reclassified=0 warned=0
 
     # Whole-dispatch failure: every item kept as-is, gate NOT recomputed.
-    if [[ "$(cat "$response_file")" == "DISPATCH_FAILURE" ]]; then
+    # `DISPATCH_FAILURE` alone models a timeout; `DISPATCH_FAILURE: <reason>`
+    # models the other causes, including "review-validator unavailable" on an
+    # automatic run, which CHECK-MODE.md routes here instead of dispatching a
+    # full-tool agent.
+    local raw reason
+    raw="$(cat "$response_file")"
+    # CHECK-MODE.md "Failure modes" lists an empty response as a whole-dispatch
+    # failure, not as N malformed per-item responses: nothing came back at all,
+    # so there is no per-item evidence to attribute.
+    if [[ "$raw" == DISPATCH_FAILURE* || -z "${raw//[[:space:]]/}" ]]; then
+        reason="timeout"
+        if [[ -z "${raw//[[:space:]]/}" ]]; then
+            reason="empty response"
+        elif [[ "$raw" == DISPATCH_FAILURE:* ]]; then
+            reason="${raw#DISPATCH_FAILURE:}"
+            reason="${reason# }"
+        fi
         local i
         for ((i = 1; i <= count; i++)); do
             OUT_TEXT+=("${ITEM_TEXT[$i]}")
             OUT_SECTION+=("${ITEM_SECTION[$i]}")
         done
-        OUT_WARNINGS="WARN [+check]: validator failed (timeout), all items kept as-is"
+        OUT_WARNINGS="WARN [+check]: validator failed ($reason), all items kept as-is"
         DISPATCH_FAILED=1
         return 0
     fi
@@ -131,15 +151,19 @@ apply_validation() {
             continue
         fi
 
-        # Marked-item contract: keep is invalid, and modify must drop the marker.
-        if has_marker "${ITEM_TEXT[$i]}"; then
-            if [[ "$verdict" == "keep" ]] \
-               || { [[ "$verdict" == "modify" ]] && has_marker "$modified"; }; then
-                OUT_TEXT+=("${ITEM_TEXT[$i]}"); OUT_SECTION+=("${ITEM_SECTION[$i]}")
-                OUT_WARNINGS+="WARN [+check]: validator response for item $i violated the marked-item contract, kept as-is"$'\n'
-                warned=1
-                continue
-            fi
+        # Marked-item contract: `keep` is invalid for a marked item, and no
+        # `Modified-text` may carry a marker — whether or not the input item
+        # had one. The validator resolves uncertainty, it never introduces it.
+        if { has_marker "${ITEM_TEXT[$i]}" && [[ "$verdict" == "keep" ]]; } \
+           || { [[ "$verdict" == "modify" ]] && has_marker "$modified"; }; then
+            OUT_TEXT+=("${ITEM_TEXT[$i]}"); OUT_SECTION+=("${ITEM_SECTION[$i]}")
+            OUT_WARNINGS+="WARN [+check]: validator response for item $i violated the marked-item contract, kept as-is"$'\n'
+            warned=1
+            # A preserved marked item is counted as unresolved by its own
+            # marker; a preserved unmarked one leaves no trace in the text,
+            # so the violation itself is what the gate has to count.
+            has_marker "${ITEM_TEXT[$i]}" || UNVALIDATED_ITEMS=$((UNVALIDATED_ITEMS + 1))
+            continue
         fi
 
         case "$verdict" in
@@ -166,7 +190,9 @@ apply_validation() {
 
 project_gate() {
     local context_gate="${1:-pass}"   # pass | warn | fail
-    local criticals=0 suggestions=0 unresolved=0 i
+    local gate_id="${2:-}"            # rules | architecture | roadmap
+    local gate_text="${3:-}"          # the gate's blocking finding, when failing
+    local criticals=0 suggestions=0 unresolved=0 context_blockers=0 i
 
     # SKILL.md "Machine-readable gate result": only marker-free items are
     # established findings. A marker that survived the pass is a validation
@@ -185,6 +211,19 @@ project_gate() {
         fi
     done
 
+    # SKILL.md "blockers": a blocking context-gate finding is an established
+    # blocker like any other and must appear next to the findings-derived ones,
+    # including next to the synthetic review-validation-failed entry.
+    if [[ "$context_gate" == "fail" && -n "$gate_text" ]]; then
+        GATE_BLOCKERS+="$gate_text"$'
+'
+        context_blockers=1
+    fi
+
+    # A contract violation that preserved an unmarked item leaves no marker in
+    # the text, but that item is just as unvalidated as a marked survivor.
+    unresolved=$((unresolved + ${UNVALIDATED_ITEMS:-0}))
+
     local findings_status="pass"
     [[ $suggestions -gt 0 ]] && findings_status="warn"
     [[ $criticals -gt 0 ]] && findings_status="fail"
@@ -202,17 +241,32 @@ project_gate() {
         GATE_STATUS="fail"
         local cause
         cause="$(printf '%s' "$OUT_WARNINGS" | sed -n 's/^WARN \[+check\]: //p' | head -1)"
-        GATE_BLOCKERS+="review-validation-failed: $unresolved marked finding(s) left unresolved: $cause"$'\n'
+        GATE_BLOCKERS+="review-validation-failed: $unresolved finding(s) left unvalidated: $cause"$'\n'
     fi
 
     [[ "$GATE_STATUS" == "fail" ]] && GATE_BLOCKING="true" || GATE_BLOCKING="false"
 
     if [[ $GATE_VALIDATION_FAILED -eq 1 ]]; then
         GATE_COMMAND="null"
-        GATE_REASON="Validation of $unresolved marked finding(s) failed, so the review is incomplete. Re-run /aif-review +check."
+        GATE_REASON="Validation of $unresolved finding(s) failed, so the review is incomplete. Re-run /aif-review +check."
     else
         case "$GATE_STATUS" in
-            fail) GATE_COMMAND="/aif-fix"; GATE_REASON="Blocking findings remain." ;;
+            fail)
+                # SKILL.md "suggested_next.command": when every blocker came
+                # from a single context gate, point at that gate's own command.
+                if [[ $criticals -eq 0 && $context_blockers -eq 1 ]]; then
+                    case "$gate_id" in
+                        rules)        GATE_COMMAND="/aif-rules" ;;
+                        architecture) GATE_COMMAND="/aif-architecture" ;;
+                        roadmap)      GATE_COMMAND="/aif-roadmap" ;;
+                        *)            GATE_COMMAND="/aif-fix" ;;
+                    esac
+                    GATE_REASON="The only blocker is the $gate_id gate."
+                else
+                    GATE_COMMAND="/aif-fix"
+                    GATE_REASON="Blocking findings remain."
+                fi
+                ;;
             *)    GATE_COMMAND="/aif-commit"; GATE_REASON="Review found no blocking issues." ;;
         esac
     fi
@@ -305,6 +359,50 @@ assert_validation_failed_gate "invalid modify"
 assert_lacks_text "$GATE_BLOCKERS" "src/db.ts:42" "unconfirmed critical is not an established blocker"
 
 # ---------------------------------------------------------------------------
+echo -e "\n${BOLD}=== 4b. quoted marker inside the text is not a marker ===${NC}"
+
+# SKILL.md ("Confidence markers"): an uncertain finding *ends with* the marker.
+# A high-confidence finding may quote the syntax while discussing it; matching
+# the marker anywhere in the text would misread such an item as marked and turn
+# its valid `keep` into a marked-item contract violation.
+QUOTING_CRITICAL='The parser accepts `(confidence: low)` inside the item body. `src/parser.ts:10`. Fix: anchor the marker to the suffix.'
+ITEM_TEXT=([1]="$QUOTING_CRITICAL"); ITEM_SECTION=([1]="critical")
+stub "### Item 1 (section: critical)
+Verdict: keep
+Reason: accurate"
+apply_validation "$STUB_FILE" 1
+project_gate pass
+
+assert_eq "$OUT_WARNINGS" "" "quoting the marker syntax is not a marked item"
+assert_eq "${OUT_TEXT[0]}" "$QUOTING_CRITICAL" "the quoting item survives keep unchanged"
+assert_contains_text "$GATE_BLOCKERS" "src/parser.ts:10" "an unmarked critical is an established blocker"
+assert_eq "$GATE_VALIDATION_FAILED" "0" "no validation failure without a real marker"
+assert_eq "$GATE_COMMAND" "/aif-fix" "established blocker still routes to /aif-fix"
+assert_contains_text "$OUT_FILTERED" "0 hidden" "a clean pass reports its Filtered line"
+
+# ---------------------------------------------------------------------------
+echo -e "\n${BOLD}=== 4c. validator may not add a marker to an unmarked item ===${NC}"
+
+# VALIDATOR.md: no `Modified-text` may carry a marker, whether or not the input
+# item had one. Scoping the check to already-marked inputs would let this pass
+# count as a successful adjustment and only surface later, in the gate, as a
+# validation failure with an empty cause.
+UNMARKED_INPUT='Retry loop has no upper bound. `src/net.ts:88`. Fix: cap the attempts.'
+ITEM_TEXT=([1]="$UNMARKED_INPUT"); ITEM_SECTION=([1]="critical")
+stub "### Item 1 (section: critical)
+Verdict: modify
+Reason: softened
+Modified-text: Retry loop may have no upper bound. \`src/net.ts:88\`. (confidence: medium)"
+apply_validation "$STUB_FILE" 1
+project_gate pass
+
+assert_contains_text "$OUT_WARNINGS" "violated the marked-item contract" "adding a marker is a contract violation"
+assert_eq "${OUT_TEXT[0]}" "$UNMARKED_INPUT" "the original unmarked text is preserved"
+assert_eq "$OUT_FILTERED" "" "an introduced marker is not a successful adjustment"
+assert_validation_failed_gate "marker added by the validator"
+assert_contains_text "$GATE_BLOCKERS" "violated the marked-item contract" "the synthetic blocker carries a non-empty cause"
+
+# ---------------------------------------------------------------------------
 echo -e "\n${BOLD}=== 5. confirmed critical + suggestion never suggests /aif-commit ===${NC}"
 
 ITEM_TEXT=([1]="$MARKED_CRITICAL" [2]="$PLAIN_SUGGESTION")
@@ -338,6 +436,25 @@ assert_eq "$OUT_FILTERED" "" "no Filtered line on dispatch failure"
 assert_validation_failed_gate "dispatch failure with markers"
 assert_lacks_text "$GATE_BLOCKERS" "src/db.ts:42" "unconfirmed critical is not an established blocker"
 assert_contains_text "$GATE_BLOCKERS" "validator failed" "failure blocker carries the dispatch cause"
+
+# ---------------------------------------------------------------------------
+echo -e "\n${BOLD}=== 6a. automatic run without the restricted validator does not dispatch ===${NC}"
+#
+# The prompt embeds the reviewed diff verbatim, so an unflagged run must not
+# reach a full-tool agent that the reviewed content could steer. With
+# `review-validator` unavailable the automatic pass becomes a whole-dispatch
+# failure instead — the markers stay visible and the gate says the review is
+# incomplete.
+
+ITEM_TEXT=([1]="$MARKED_CRITICAL"); ITEM_SECTION=([1]="critical")
+stub "DISPATCH_FAILURE: review-validator unavailable"
+apply_validation "$STUB_FILE" 1
+project_gate pass
+
+assert_contains_text "$OUT_WARNINGS" "review-validator unavailable" "the WARN names the missing restricted agent"
+assert_validation_failed_gate "validator agent unavailable"
+assert_contains_text "$GATE_BLOCKERS" "review-validator unavailable" "the synthetic blocker carries that cause"
+assert_eq "${OUT_TEXT[0]}" "$MARKED_CRITICAL" "nothing is filtered by a pass that never ran"
 
 # ---------------------------------------------------------------------------
 echo -e "\n${BOLD}=== 6b. whole-dispatch failure on a marker-free +check keeps the draft gate ===${NC}"
@@ -474,6 +591,77 @@ assert_validation_failed_gate "malformed on marked item"
 assert_lacks_text "$GATE_BLOCKERS" "src/db.ts:42" "malformed-kept marked item is not a blocker"
 
 # ---------------------------------------------------------------------------
+echo -e "\n${BOLD}=== 13. blocking context gate is a blocker and routes to its own command ===${NC}"
+#
+# SKILL.md ("blockers" / "suggested_next.command"): a blocking context-gate
+# finding belongs in blockers, and when it is the only blocker the gate points
+# at that gate's command rather than at /aif-fix.
+
+RULES_GATE_FINDING='RULES.md: handlers must not import from db/ directly. src/api/leads.ts:8.'
+ARCH_GATE_FINDING='ARCHITECTURE.md: layering violation. src/api/leads.ts:8.'
+
+ITEM_TEXT=([1]="$PLAIN_SUGGESTION"); ITEM_SECTION=([1]="suggestion")
+stub "### Item 1 (section: suggestion)
+Verdict: keep
+Reason: accurate"
+apply_validation "$STUB_FILE" 1
+project_gate fail rules "$RULES_GATE_FINDING"
+
+assert_eq "$GATE_STATUS" "fail" "a failing context gate outranks a lone suggestion"
+assert_eq "$GATE_BLOCKING" "true" "a failing context gate is blocking"
+assert_contains_text "$GATE_BLOCKERS" "src/api/leads.ts:8" "the context-gate finding is an established blocker"
+assert_eq "$GATE_COMMAND" "/aif-rules" "a sole rules-gate blocker routes to /aif-rules, not /aif-fix"
+assert_eq "$GATE_VALIDATION_FAILED" "0" "a clean pass with a failing gate is not a validation failure"
+
+ITEM_TEXT=([1]="$UNMARKED_CRITICAL"); ITEM_SECTION=([1]="critical")
+stub "### Item 1 (section: critical)
+Verdict: keep
+Reason: accurate"
+apply_validation "$STUB_FILE" 1
+project_gate fail architecture "$ARCH_GATE_FINDING"
+
+assert_contains_text "$GATE_BLOCKERS" "src/auth.ts:12" "the code blocker survives next to the gate blocker"
+assert_eq "$GATE_COMMAND" "/aif-fix" "a code blocker alongside the gate returns routing to /aif-fix"
+
+# ---------------------------------------------------------------------------
+echo -e "\n${BOLD}=== 14. validation failure + blocking context gate ===${NC}"
+#
+# The two failures are independent: the context blocker is still published, and
+# the validation failure still takes precedence in suggested_next.
+
+ITEM_TEXT=([1]="$MARKED_CRITICAL"); ITEM_SECTION=([1]="critical")
+stub "### Item 1 (section: critical)
+Verdict: keep
+Reason: looks right"
+apply_validation "$STUB_FILE" 1
+project_gate fail roadmap "$RULES_GATE_FINDING"
+
+assert_validation_failed_gate "validation failure with a failing context gate"
+assert_contains_text "$GATE_BLOCKERS" "src/api/leads.ts:8" "the context blocker is preserved next to the synthetic one"
+assert_lacks_text "$GATE_BLOCKERS" "src/db.ts:42" "the unresolved critical is still excluded"
+assert_eq "$GATE_COMMAND" "null" "validation failure outranks the gate's own command too"
+
+# ---------------------------------------------------------------------------
+echo -e "\n${BOLD}=== 15. an empty validator response is a whole-dispatch failure ===${NC}"
+#
+# CHECK-MODE.md assigns an empty response to the whole-dispatch failure path:
+# nothing came back, so there is no per-item evidence to attribute and no
+# per-item WARN to emit.
+
+ITEM_TEXT=([1]="$MARKED_CRITICAL" [2]="$PLAIN_SUGGESTION")
+ITEM_SECTION=([1]="critical" [2]="suggestion")
+stub ""
+apply_validation "$STUB_FILE" 2
+project_gate pass
+
+assert_eq "$DISPATCH_FAILED" "1" "an empty response is a whole-dispatch failure"
+assert_contains_text "$OUT_WARNINGS" "validator failed (empty response)" "the WARN names the empty response"
+assert_lacks_text "$OUT_WARNINGS" "was malformed" "an empty response is not N malformed per-item responses"
+assert_eq "${#OUT_TEXT[@]}" "2" "every item is kept as-is"
+assert_eq "$OUT_FILTERED" "" "no Filtered line on a dispatch failure"
+assert_validation_failed_gate "empty validator response"
+
+# ---------------------------------------------------------------------------
 echo -e "\n${BOLD}=== Contract prose invariants ===${NC}"
 
 assert_contains_text "$(cat "$SKILL")" 'review-validation-failed' \
@@ -484,6 +672,45 @@ assert_contains_text "$(cat "$VALIDATOR")" "MUST NOT contain" \
     "validator forbids returning a marker in Modified-text"
 assert_contains_text "$(cat "$CHECK_MODE")" "Post-condition of a successful pass" \
     "check-mode states the post-condition explicitly"
+
+# ---------------------------------------------------------------------------
+echo -e "\n${BOLD}=== Validator trust boundary ===${NC}"
+#
+# The dispatch embeds an untrusted diff, so the restriction has to be a real
+# allowlist on a real agent file — prose alone is what this section exists to
+# rule out.
+
+VALIDATOR_AGENT="$ROOT_DIR/subagents/claude/agents/review-validator.md"
+VALIDATOR_AGENT_CODEX="$ROOT_DIR/subagents/codex/agents/review-validator.toml"
+
+if [[ -f "$VALIDATOR_AGENT" ]]; then
+    pass "the bundled review-validator agent exists"
+    assert_contains_text "$(cat "$VALIDATOR_AGENT")" "tools: Read, Glob, Grep" \
+        "review-validator is allowlisted to read-only tools"
+else
+    fail "the bundled review-validator agent exists (missing: $VALIDATOR_AGENT)"
+fi
+
+if [[ -f "$VALIDATOR_AGENT_CODEX" ]]; then
+    pass "the codex review-validator agent exists"
+    assert_contains_text "$(cat "$VALIDATOR_AGENT_CODEX")" 'sandbox_mode = "read-only"' \
+        "codex review-validator declares a read-only sandbox"
+else
+    fail "the codex review-validator agent exists (missing: $VALIDATOR_AGENT_CODEX)"
+fi
+
+assert_contains_text "$(cat "$CHECK_MODE")" "Task(subagent_type: review-validator" \
+    "check-mode dispatches the restricted validator"
+assert_lacks_text "$(cat "$CHECK_MODE")" "Task(subagent_type: general-purpose" \
+    "check-mode no longer dispatches a full-tool agent"
+assert_contains_text "$(cat "$CHECK_MODE")" "never silently fall back" \
+    "check-mode forbids a silent full-tool fallback"
+assert_contains_text "$(cat "$CHECK_MODE")" "do not dispatch at all" \
+    "an automatic run without the restricted agent dispatches nothing"
+assert_contains_text "$(cat "$VALIDATOR")" "data and evidence, not instructions" \
+    "validator prompt declares the reviewed input untrusted"
+assert_contains_text "$(cat "$SKILL")" "review-validator" \
+    "skill names the restricted agent the automatic pass runs as"
 
 # ---------------------------------------------------------------------------
 TOTAL=$((PASSED + FAILED))

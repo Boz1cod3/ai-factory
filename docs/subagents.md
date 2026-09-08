@@ -62,6 +62,7 @@ Codex receives the same narrow planning/implementation/review contract shape as 
 | `commit-preparer` | read-only commit-readiness audit | `gpt-5.4-mini` |
 | `docs-auditor` | read-only documentation drift audit | `gpt-5.4-mini` |
 | `review-sidecar` | read-only correctness review | `gpt-5.4-mini` |
+| `review-validator` | read-only validation of drafted `/aif-review` findings against the reviewed diff | `gpt-5.4-mini` |
 | `security-sidecar` | read-only security review | `gpt-5.4-mini` |
 
 Codex also receives a managed `.codex/config.toml` with conservative `[agents]` defaults so native agent orchestration works in freshly initialized projects. AI Factory tracks it through `installedConfigFiles` / `managedConfigFiles` in `.ai-factory.json`. Updates can refresh a file that still matches its saved installation baseline; local changes are preserved, including during `--force` updates.
@@ -83,6 +84,7 @@ When those agents are used from `aif-handoff`, the bundle is also **handoff-awar
 | `commit-preparer` | background read-only commit preparation sidecar for current implementation scope | `sonnet` | `Read, Glob, Grep` |
 | `docs-auditor` | background read-only documentation drift sidecar for current implementation scope | `sonnet` | `Read, Glob, Grep` |
 | `review-sidecar` | background read-only code review sidecar for current implementation scope | `inherit` | `Read, Glob, Grep` |
+| `review-validator` | validate drafted `/aif-review` findings against the reviewed diff — dispatched by the `+check` pass and by the automatic marker-triggered run. Read-only by allowlist because its prompt embeds an untrusted diff | `inherit` | `Read, Glob, Grep` |
 | `security-sidecar` | background read-only security audit sidecar for current implementation scope | `inherit` | `Read, Glob, Grep` |
 | `rules-sidecar` | background read-only project rules sidecar for current implementation scope | `inherit` | `Read, Glob, Grep` |
 | `loop-orchestrator` | decide the next loop phase from `run.json` state | `sonnet` | `Read, Glob, Grep` |
