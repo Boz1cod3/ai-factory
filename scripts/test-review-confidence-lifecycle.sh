@@ -59,8 +59,12 @@ assert_lacks_text() {
     fi
 }
 
+# A marker is a suffix of the whole item text. `grep`'s `$` anchors to the end
+# of any line, so an inner line of a multi-line item would match; `[[ =~ ]]`
+# anchors to the end of the string.
 has_marker() {
-    printf '%s' "$1" | grep -Eq '\(confidence: (low|medium)\)[[:space:]]*$'
+    local marker_re='\(confidence: (low|medium)\)[[:space:]]*$'
+    [[ "$1" =~ $marker_re ]]
 }
 
 # ---------------------------------------------------------------------------
@@ -122,16 +126,28 @@ apply_validation() {
 
     local i
     for ((i = 1; i <= count; i++)); do
-        local block verdict severity modified target
+        local block fields verdict severity modified target
         block=$(awk -v n="$i" '
             $0 ~ "^### Item " n " " { capture = 1; next }
             /^### Item / { capture = 0 }
             capture { print }
         ' "$response_file")
 
-        verdict=$(printf '%s' "$block" | sed -n 's/^Verdict: *//p' | head -1)
-        severity=$(printf '%s' "$block" | sed -n 's/^Severity: *//p' | head -1)
-        modified=$(printf '%s' "$block" | sed -n 's/^Modified-text: *//p' | head -1)
+        # VALIDATOR.md "Output format": `Modified-text` is the last field and
+        # runs to the end of the block, continuation lines included. Fields are
+        # read only above it, so a line below it is corrected text, not a field.
+        fields=$(printf '%s\n' "$block" | awk '/^Modified-text:/ { exit } { print }')
+        verdict=$(printf '%s' "$fields" | sed -n 's/^Verdict: *//p' | head -1)
+        severity=$(printf '%s' "$fields" | sed -n 's/^Severity: *//p' | head -1)
+        modified=$(printf '%s\n' "$block" | awk '
+            !found && /^Modified-text:/ { found = 1; sub(/^Modified-text: */, "") }
+            found { line[++n] = $0 }
+            END {
+                s = 1
+                while (s <= n && line[s] ~ /^[[:space:]]*$/) s++
+                while (n >= s && line[n] ~ /^[[:space:]]*$/) n--
+                for (i = s; i <= n; i++) print line[i]
+            }')
         [[ -z "$severity" ]] && severity="unchanged"
 
         case "$severity" in
@@ -286,7 +302,7 @@ assert_validation_failed_gate() {
 stub() { printf '%s\n' "$1" > "$STUB_FILE"; }
 
 STUB_FILE="$(mktemp)"
-trap 'rm -f "$STUB_FILE"' EXIT
+trap 'rm -f "$STUB_FILE" "$STUB_FILE".*' EXIT
 
 MARKED_CRITICAL='Connection is never closed on the error path. `src/db.ts:42`. Fix: close in `finally`. (confidence: low)'
 CONFIRMED_TEXT='Connection is never closed on the error path. `src/db.ts:42`. Fix: close in `finally`.'
@@ -401,6 +417,75 @@ assert_eq "${OUT_TEXT[0]}" "$UNMARKED_INPUT" "the original unmarked text is pres
 assert_eq "$OUT_FILTERED" "" "an introduced marker is not a successful adjustment"
 assert_validation_failed_gate "marker added by the validator"
 assert_contains_text "$GATE_BLOCKERS" "violated the marked-item contract" "the synthetic blocker carries a non-empty cause"
+
+# ---------------------------------------------------------------------------
+echo -e "\n${BOLD}=== 4d. multi-line item: an inner line ending with the literal is not a marker ===${NC}"
+
+# The marker is a suffix of the whole item, not of any line. A `$`-anchored
+# grep matches per line, so it would misread this item as marked.
+MULTILINE_QUOTING=$'The parser accepts the literal\n(confidence: low)\ninside the item body. `src/parser.ts:10`. Fix: anchor the suffix parser.'
+ITEM_TEXT=([1]="$MULTILINE_QUOTING"); ITEM_SECTION=([1]="critical")
+stub "### Item 1 (section: critical)
+Verdict: keep
+Reason: accurate"
+apply_validation "$STUB_FILE" 1
+project_gate pass
+
+assert_eq "$OUT_WARNINGS" "" "an inner-line literal does not make a multi-line item marked"
+assert_eq "${OUT_TEXT[0]}" "$MULTILINE_QUOTING" "the multi-line item survives keep unchanged"
+assert_eq "$GATE_VALIDATION_FAILED" "0" "no validation failure without a real suffix marker"
+assert_contains_text "$GATE_BLOCKERS" "src/parser.ts:10" "the unmarked multi-line critical is an established blocker"
+
+MULTILINE_MARKED=$'Connection is never closed on the error path.\n`src/db.ts:42`. Fix: close in `finally`. (confidence: low)  '
+ITEM_TEXT=([1]="$MULTILINE_MARKED"); ITEM_SECTION=([1]="critical")
+stub "### Item 1 (section: critical)
+Verdict: keep
+Reason: looks right"
+apply_validation "$STUB_FILE" 1
+project_gate pass
+assert_contains_text "$OUT_WARNINGS" "violated the marked-item contract" \
+    "a marker on the last line, trailing whitespace included, still marks a multi-line item"
+
+# ---------------------------------------------------------------------------
+echo -e "\n${BOLD}=== 4e. multi-line Modified-text: the continuation is part of the text ===${NC}"
+
+# VALIDATOR.md: `Modified-text` runs to the end of the block. A parser that
+# keeps only its first physical line loses the path and fix on line two — and,
+# worse, misses a marker the validator put there.
+UNMARKED_INPUT='Variable name `tmp2` is unclear. `src/db.ts:51`. Fix: rename.'
+MULTILINE_MODIFIED=$'Rename `tmp2` to `pendingRows`.\n`src/db.ts:51`. Fix: rename and drop the trailing comment.'
+ITEM_TEXT=([1]="$UNMARKED_INPUT"); ITEM_SECTION=([1]="suggestion")
+stub "### Item 1 (section: suggestion)
+Verdict: modify
+Reason: sharpened
+Modified-text: Rename \`tmp2\` to \`pendingRows\`.
+\`src/db.ts:51\`. Fix: rename and drop the trailing comment.
+"
+apply_validation "$STUB_FILE" 1
+project_gate pass
+
+assert_eq "$OUT_WARNINGS" "" "a plain multi-line Modified-text is a normal modify"
+assert_eq "${OUT_TEXT[0]}" "$MULTILINE_MODIFIED" "every line of Modified-text is kept, trailing blank line dropped"
+assert_contains_text "$OUT_FILTERED" "1 adjusted" "the multi-line modify is counted as adjusted"
+assert_eq "$GATE_COMMAND" "/aif-commit" "a surviving suggestion keeps the gate at warn"
+
+# ---------------------------------------------------------------------------
+echo -e "\n${BOLD}=== 4f. marker in the continuation of Modified-text is a contract violation ===${NC}"
+
+ITEM_TEXT=([1]="$UNMARKED_INPUT"); ITEM_SECTION=([1]="suggestion")
+stub "### Item 1 (section: suggestion)
+Verdict: modify
+Reason: softened
+Modified-text: Rename tmp2.
+(confidence: medium)"
+apply_validation "$STUB_FILE" 1
+project_gate pass
+
+assert_contains_text "$OUT_WARNINGS" "violated the marked-item contract" \
+    "a marker on the second line of Modified-text is still a forbidden rewrite"
+assert_eq "${OUT_TEXT[0]}" "$UNMARKED_INPUT" "the original unmarked text is preserved"
+assert_eq "$OUT_FILTERED" "" "the run does not report a clean Filtered line"
+assert_validation_failed_gate "marker in a Modified-text continuation"
 
 # ---------------------------------------------------------------------------
 echo -e "\n${BOLD}=== 5. confirmed critical + suggestion never suggests /aif-commit ===${NC}"
@@ -694,10 +779,90 @@ fi
 if [[ -f "$VALIDATOR_AGENT_CODEX" ]]; then
     pass "the codex review-validator agent exists"
     assert_contains_text "$(cat "$VALIDATOR_AGENT_CODEX")" 'sandbox_mode = "read-only"' \
-        "codex review-validator declares a read-only sandbox"
+        "codex review-validator keeps its read-only sandbox (it bounds commands, not tools)"
+    assert_contains_text "$(cat "$VALIDATOR_AGENT_CODEX")" "only on an explicit" \
+        "codex review-validator documents that automatic runs never dispatch it"
 else
     fail "the codex review-validator agent exists (missing: $VALIDATOR_AGENT_CODEX)"
 fi
+
+# A string in an agent file proves nothing about the tools the agent actually
+# gets. Reference model of the effective tool surface, per runtime (CHECK-MODE.md,
+# Procedure step 4): a Claude Code `tools:` line is an enforced allowlist; a
+# Codex agent has no allowlist — `sandbox_mode` bounds commands — and inherits
+# the parent's `mcp_servers` when its file omits them. Prints the surface beyond
+# Read/Glob/Grep; empty output means an enforced read-only boundary.
+validator_extra_tools() {
+    local agent_file="$1" parent_config="$2" tools
+    case "$agent_file" in
+        *.md)
+            tools=$(sed -n 's/^tools: *//p' "$agent_file" | head -1)
+            if [[ -z "$tools" ]]; then echo "all tools (no allowlist)"; return 0; fi
+            printf '%s\n' "$tools" | tr ',' '\n' | sed 's/^ *//; s/ *$//' | grep -vxE 'Read|Glob|Grep' || true
+            ;;
+        *.toml)
+            echo "no tool allowlist"
+            if ! grep -qE '^\[?mcp_servers' "$agent_file" && [[ -f "$parent_config" ]]; then
+                sed -n 's/^\[mcp_servers\.\([^].]*\)\]$/inherited MCP server \1/p' "$parent_config"
+            fi
+            ;;
+    esac
+}
+
+# mode: auto | check. Prints dispatch | dispatch-weak | fallback-full-tool, or
+# the `DISPATCH_FAILURE: <reason>` stub apply_validation consumes.
+validator_dispatch() {
+    local agent_file="$1" parent_config="$2" mode="$3" extra
+    if [[ ! -f "$agent_file" ]]; then
+        if [[ "$mode" == "check" ]]; then echo "fallback-full-tool"; else echo "DISPATCH_FAILURE: validator agent unavailable"; fi
+        return 0
+    fi
+    extra=$(validator_extra_tools "$agent_file" "$parent_config")
+    if [[ -z "$extra" ]]; then
+        echo "dispatch"
+    elif [[ "$mode" == "check" ]]; then
+        echo "dispatch-weak"
+    else
+        echo "DISPATCH_FAILURE: validator tool boundary not enforced by this runtime ($(printf '%s' "$extra" | tr '\n' ';'))"
+    fi
+}
+
+# Mock parent session with an MCP server that can modify state.
+MOCK_PARENT_CONFIG="$STUB_FILE.parent.toml"
+printf '%s\n' '[mcp_servers.mock-writer]' 'command = "mock-writer"' '' \
+    '[mcp_servers.mock-writer.tools.delete_record]' 'approval_mode = "approve"' > "$MOCK_PARENT_CONFIG"
+UNLISTED_AGENT="$STUB_FILE.agent.md"
+printf '%s\n' '---' 'name: review-validator' '---' > "$UNLISTED_AGENT"
+
+assert_eq "$(validator_dispatch "$VALIDATOR_AGENT" "$MOCK_PARENT_CONFIG" auto)" "dispatch" \
+    "claude: the enforced allowlist keeps the inherited mock writer out, automatic run dispatches"
+assert_eq "$(validator_dispatch "$UNLISTED_AGENT" "$MOCK_PARENT_CONFIG" auto)" \
+    "DISPATCH_FAILURE: validator tool boundary not enforced by this runtime (all tools (no allowlist))" \
+    "an agent file without a tools allowlist is not a boundary"
+assert_eq "$(validator_dispatch "$VALIDATOR_AGENT_CODEX" "$MOCK_PARENT_CONFIG" check)" "dispatch-weak" \
+    "codex + explicit +check: dispatched, with a weaker boundary"
+assert_eq "$(validator_dispatch "$STUB_FILE.missing.toml" "$MOCK_PARENT_CONFIG" check)" "fallback-full-tool" \
+    "missing agent + explicit +check: full-tool fallback"
+
+CODEX_AUTO=$(validator_dispatch "$VALIDATOR_AGENT_CODEX" "$MOCK_PARENT_CONFIG" auto)
+assert_contains_text "$CODEX_AUTO" "DISPATCH_FAILURE: validator tool boundary not enforced" \
+    "codex + automatic run: the dispatch is rejected"
+assert_contains_text "$CODEX_AUTO" "inherited MCP server mock-writer" \
+    "the rejection names the inherited server with a modifying tool"
+
+ITEM_TEXT=([1]="$MARKED_CRITICAL"); ITEM_SECTION=([1]="critical")
+stub "$CODEX_AUTO"
+apply_validation "$STUB_FILE" 1
+project_gate pass
+assert_validation_failed_gate "codex automatic run"
+assert_contains_text "$GATE_BLOCKERS" "tool boundary not enforced" "the failure blocker carries the boundary cause"
+
+assert_contains_text "$(cat "$CHECK_MODE")" "Codex custom agents have none" \
+    "check-mode separates the codex guarantee from the claude allowlist"
+assert_contains_text "$(cat "$CHECK_MODE")" "inherited from the parent session" \
+    "check-mode documents MCP inheritance"
+assert_lacks_text "$(cat "$CHECK_MODE")" 'tool allowlist is `Read`, `Glob`, `Grep` (`subagents/claude/agents/review-validator.md`, `subagents/codex/agents/review-validator.toml`' \
+    "check-mode no longer claims the codex file is allowlisted"
 
 assert_contains_text "$(cat "$CHECK_MODE")" "Task(subagent_type: review-validator" \
     "check-mode dispatches the restricted validator"

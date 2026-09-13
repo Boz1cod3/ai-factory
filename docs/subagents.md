@@ -84,7 +84,7 @@ When those agents are used from `aif-handoff`, the bundle is also **handoff-awar
 | `commit-preparer` | background read-only commit preparation sidecar for current implementation scope | `sonnet` | `Read, Glob, Grep` |
 | `docs-auditor` | background read-only documentation drift sidecar for current implementation scope | `sonnet` | `Read, Glob, Grep` |
 | `review-sidecar` | background read-only code review sidecar for current implementation scope | `inherit` | `Read, Glob, Grep` |
-| `review-validator` | validate drafted `/aif-review` findings against the reviewed diff — dispatched by the `+check` pass and by the automatic marker-triggered run. Read-only by allowlist because its prompt embeds an untrusted diff | `inherit` | `Read, Glob, Grep` |
+| `review-validator` | validate drafted `/aif-review` findings against the reviewed diff — dispatched by the `+check` pass and by the automatic marker-triggered run. Read-only by allowlist because its prompt embeds an untrusted diff; the Codex variant has only a read-only sandbox, so an automatic run never dispatches it | `inherit` | `Read, Glob, Grep` |
 | `security-sidecar` | background read-only security audit sidecar for current implementation scope | `inherit` | `Read, Glob, Grep` |
 | `rules-sidecar` | background read-only project rules sidecar for current implementation scope | `inherit` | `Read, Glob, Grep` |
 | `loop-orchestrator` | decide the next loop phase from `run.json` state | `sonnet` | `Read, Glob, Grep` |
