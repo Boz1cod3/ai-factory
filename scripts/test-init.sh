@@ -379,19 +379,21 @@ echo "codex deselect cleanup smoke tests passed"
 # installation.
 # -------------------------------------------------------------------
 
-FLAT_PROJECT_DIR="$TMPDIR/init-smoke-antigravity"
-mkdir -p "$FLAT_PROJECT_DIR"
+AG_PROJECT_DIR="$TMPDIR/init-smoke-antigravity"
+mkdir -p "$AG_PROJECT_DIR"
 
-(cd "$FLAT_PROJECT_DIR" && node "$ROOT_DIR/dist/cli/index.js" init --agents antigravity --skills aif,aif-rules-check > "$TMPDIR/init-antigravity.log" 2>&1)
+(cd "$AG_PROJECT_DIR" && node "$ROOT_DIR/dist/cli/index.js" init --agents antigravity --skills aif,aif-rules-check --mcp filesystem > "$TMPDIR/init-antigravity.log" 2>&1)
 
-assert_exists "$FLAT_PROJECT_DIR/.agent/workflows/aif.md" "antigravity init must install aif as a flat workflow"
-assert_exists "$FLAT_PROJECT_DIR/.agent/workflows/aif-rules-check.md" "antigravity init must install aif-rules-check as a flat workflow"
-assert_exists "$FLAT_PROJECT_DIR/.agent/workflows/references/update-config.mjs" "flat workflow installs must include the config helper in references/"
-assert_exists "$FLAT_PROJECT_DIR/.agent/workflows/references/config-template.yaml" "flat workflow installs must include config template references"
-assert_exists "$FLAT_PROJECT_DIR/.agent/workflows/references/RULES-CHECK-CONTRACT.md" "flat workflow installs must include rules-check references"
-assert_not_exists "$FLAT_PROJECT_DIR/.agent/skills/aif-rules-check" "workflow-classified skills must not remain under .agent/skills/"
+assert_exists "$AG_PROJECT_DIR/.agents/skills/aif/SKILL.md" "antigravity init must install aif as standard SKILL.md directory"
+assert_exists "$AG_PROJECT_DIR/.agents/skills/aif-rules-check/SKILL.md" "antigravity init must install aif-rules-check as standard SKILL.md directory"
+assert_exists "$AG_PROJECT_DIR/.agents/skills/aif/references/config-template.yaml" "antigravity skills must include config template references"
+assert_exists "$AG_PROJECT_DIR/.agents/mcp_config.json" "antigravity init must create .agents/mcp_config.json"
+assert_exists "$AG_PROJECT_DIR/.agents/rules/aif-guardrails.md" "antigravity init must create .agents/rules/aif-guardrails.md"
+assert_exists "$AG_PROJECT_DIR/.agents/rules/aif-conventions.md" "antigravity init must create .agents/rules/aif-conventions.md"
+assert_exists "$AG_PROJECT_DIR/.agents/subagents/implement-coordinator.md" "antigravity init must install implement-coordinator subagent"
+assert_not_exists "$AG_PROJECT_DIR/.agent/workflows" "legacy .agent/workflows/ must not exist in Antigravity 2.0"
 
-echo "flat workflow init smoke tests passed"
+echo "antigravity 2.0 init smoke tests passed"
 
 # -------------------------------------------------------------------
 # Codex app skills smoke: Codex app uses the repository skills location

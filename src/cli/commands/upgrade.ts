@@ -82,6 +82,13 @@ async function removeWorkflowFile(projectDir: string, configDir: string, skillNa
     await removeFile(flatFile);
     return true;
   }
+  if (configDir !== '.agent') {
+    const legacyFlatFile = path.join(projectDir, '.agent', 'workflows', `${skillName}.md`);
+    if (await fileExists(legacyFlatFile)) {
+      await removeFile(legacyFlatFile);
+      return true;
+    }
+  }
   return false;
 }
 

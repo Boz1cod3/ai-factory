@@ -5,6 +5,7 @@ export type AgentFileExtension = '.md' | '.toml';
 export const AGENT_IDS = {
   claude: 'claude',
   codex: 'codex',
+  antigravity: 'antigravity',
 } as const;
 
 export interface AgentConfig {
@@ -180,13 +181,16 @@ const BUILTIN_AGENT_REGISTRY: Record<string, AgentConfig> = {
     skillsCliAgent: 'kilo',
     source: 'builtin',
   },
-  antigravity: {
-    id: 'antigravity',
+  [AGENT_IDS.antigravity]: {
+    id: AGENT_IDS.antigravity,
     displayName: 'Antigravity',
-    configDir: '.agent',
-    skillsDir: '.agent/skills',
-    settingsFile: null,
-    supportsMcp: false,
+    configDir: '.agents',
+    skillsDir: '.agents/skills',
+    agentsDir: '.agents/subagents',
+    agentFileExtension: '.md',
+    agentsSourceDir: 'subagents/antigravity/agents',
+    settingsFile: '.agents/mcp_config.json',
+    supportsMcp: true,
     skillsCliAgent: 'antigravity',
     source: 'builtin',
   },
