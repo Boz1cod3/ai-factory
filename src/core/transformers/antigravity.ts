@@ -1,6 +1,6 @@
 import type { AgentTransformer, TransformResult } from '../transformer.js';
-import { WORKFLOW_SKILLS } from '../transformer.js';
-import { writeTextFile, fileExists, removeFile } from '../../utils/fs.js';
+
+import { writeTextFile, fileExists, removeFile, removeDirectory, listDirectories } from '../../utils/fs.js';
 import path from 'path';
 
 export class AntigravityTransformer implements AgentTransformer {
@@ -107,17 +107,18 @@ Standard Model Context Protocol configuration with workspace scope.
 
     // Purge legacy v1 .agent artifacts if present
     const legacyWorkflowsDir = path.join(projectDir, '.agent', 'workflows');
-    for (const workflow of WORKFLOW_SKILLS) {
-      const workflowFile = path.join(legacyWorkflowsDir, `${workflow}.md`);
-      if (await fileExists(workflowFile)) {
-        await removeFile(workflowFile);
-      }
+    if (await fileExists(legacyWorkflowsDir)) {
+      await removeDirectory(legacyWorkflowsDir);
     }
     const legacyRulesDir = path.join(projectDir, '.agent', 'rules');
-    for (const ruleFile of ['aif-guardrails.md', 'aif-conventions.md']) {
-      const rulePath = path.join(legacyRulesDir, ruleFile);
-      if (await fileExists(rulePath)) {
-        await removeFile(rulePath);
+    if (await fileExists(legacyRulesDir)) {
+      await removeDirectory(legacyRulesDir);
+    }
+    const legacyAgentDir = path.join(projectDir, '.agent');
+    if (await fileExists(legacyAgentDir)) {
+      const remaining = await listDirectories(legacyAgentDir);
+      if (remaining.length === 0) {
+        await removeDirectory(legacyAgentDir);
       }
     }
   }

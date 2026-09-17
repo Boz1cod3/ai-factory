@@ -297,11 +297,11 @@ mkdir -p "$AG_PROJECT_DIR"
 
 cat > "$AG_PROJECT_DIR/.ai-factory.json" << 'EOF'
 {
-  "version": "2.4.0",
+  "version": "2.19.0",
   "agents": [
     {
       "id": "antigravity",
-      "skillsDir": ".agent/skills",
+      "skillsDir": ".agents/skills",
       "installedSkills": ["aif", "aif-docs", "custom/workflow-ref"],
       "mcp": {
         "github": false,
@@ -322,17 +322,21 @@ AG_FORCE_OUTPUT="$TMPDIR/update-antigravity-force.log"
 (cd "$AG_PROJECT_DIR" && node "$ROOT_DIR/dist/cli/index.js" update > "$AG_FIRST_OUTPUT" 2>&1)
 assert_contains "$AG_FIRST_OUTPUT" "\[antigravity\] Status:" "antigravity status section must be printed"
 
-mkdir -p "$AG_PROJECT_DIR/.agent/workflows/references/custom"
-cat > "$AG_PROJECT_DIR/.agent/workflows/references/custom/keep.md" << 'EOF'
+mkdir -p "$AG_PROJECT_DIR/.agents/skills/custom/workflow-ref"
+cat > "$AG_PROJECT_DIR/.agents/skills/custom/workflow-ref/SKILL.md" << 'EOF'
+---
+name: custom-ref
+description: custom reference skill
+---
 # custom reference
 keep-me
 EOF
 
-mkdir -p "$AG_PROJECT_DIR/.agent/skills/aif-docs/references"
-cat > "$AG_PROJECT_DIR/.agent/skills/aif-docs/stale.txt" << 'EOF'
+mkdir -p "$AG_PROJECT_DIR/.agents/skills/aif-docs/references"
+cat > "$AG_PROJECT_DIR/.agents/skills/aif-docs/stale.txt" << 'EOF'
 stale
 EOF
-cat > "$AG_PROJECT_DIR/.agent/skills/aif-docs/references/stale.md" << 'EOF'
+cat > "$AG_PROJECT_DIR/.agents/skills/aif-docs/references/stale.md" << 'EOF'
 stale-ref
 EOF
 
@@ -343,10 +347,10 @@ assert_contains "$AG_FORCE_OUTPUT" "aif \(force reinstall\)" "workflow skill sho
 assert_contains "$AG_FORCE_OUTPUT" "aif-docs \(force reinstall\)" "non-workflow skill should be force reinstalled"
 assert_contains "$AG_FORCE_OUTPUT" "\[antigravity\] Custom skills \(preserved\):" "custom skills section should be printed"
 assert_contains "$AG_FORCE_OUTPUT" "custom/workflow-ref" "custom skill reference should be preserved in config"
-assert_exists "$AG_PROJECT_DIR/.agent/workflows/references/custom/keep.md" "custom workflow reference must survive force update"
-assert_contains "$AG_PROJECT_DIR/.agent/workflows/references/custom/keep.md" "keep-me" "custom workflow reference content must be preserved"
-assert_not_exists "$AG_PROJECT_DIR/.agent/skills/aif-docs/stale.txt" "stale file in .agent/skills/<skill> must be cleaned on force update"
-assert_not_exists "$AG_PROJECT_DIR/.agent/skills/aif-docs/references/stale.md" "stale reference in .agent/skills/<skill> must be cleaned on force update"
+assert_exists "$AG_PROJECT_DIR/.agents/skills/custom/workflow-ref/SKILL.md" "custom skill must survive force update"
+assert_contains "$AG_PROJECT_DIR/.agents/skills/custom/workflow-ref/SKILL.md" "keep-me" "custom skill content must be preserved"
+assert_not_exists "$AG_PROJECT_DIR/.agents/skills/aif-docs/stale.txt" "stale file in .agents/skills/<skill> must be cleaned on force update"
+assert_not_exists "$AG_PROJECT_DIR/.agents/skills/aif-docs/references/stale.md" "stale reference in .agents/skills/<skill> must be cleaned on force update"
 
 echo "antigravity force smoke tests passed"
 

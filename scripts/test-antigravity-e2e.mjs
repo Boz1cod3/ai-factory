@@ -2,6 +2,7 @@ import { execSync } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 import assert from 'assert';
+import { installSkills, buildManagedSkillsState } from '../dist/core/installer.js';
 
 const ROOT_DIR = path.resolve('.');
 const TEST_DIR = path.join(ROOT_DIR, 'temp-test-ag');
@@ -113,6 +114,73 @@ try {
   });
   console.log(forceUpdateOutput);
   assert(forceUpdateOutput.includes('Force mode enabled'), 'Force update must show Force mode enabled');
+
+  // 9. Test upgrading an existing Antigravity 1.0 project (verify legacy deinstallation and purge)
+  console.log('\nTesting: ai-factory upgrade from legacy Antigravity 1.0 structure');
+  const LEGACY_DIR = path.join(ROOT_DIR, 'temp-test-legacy-ag');
+  try {
+    if (fs.existsSync(LEGACY_DIR)) {
+      fs.rmSync(LEGACY_DIR, { recursive: true, force: true });
+    }
+    fs.mkdirSync(LEGACY_DIR, { recursive: true });
+
+    // Simulate Antigravity 1.0 project layout
+    const legacyWorkflows = path.join(LEGACY_DIR, '.agent', 'workflows');
+    const legacyRules = path.join(LEGACY_DIR, '.agent', 'rules');
+    fs.mkdirSync(legacyWorkflows, { recursive: true });
+    fs.mkdirSync(legacyRules, { recursive: true });
+
+    fs.writeFileSync(path.join(legacyWorkflows, 'aif.md'), '# Legacy workflow\n');
+    fs.writeFileSync(path.join(legacyWorkflows, 'aif-plan.md'), '# Legacy plan workflow\n');
+    fs.writeFileSync(path.join(legacyRules, 'aif-guardrails.md'), '# Legacy rule without trigger\n');
+
+    await installSkills({
+      projectDir: LEGACY_DIR,
+      agentId: 'antigravity',
+      skillsDir: '.agent/skills',
+      skills: ['aif', 'aif-plan'],
+    });
+
+    const legacyAgent = {
+      id: 'antigravity',
+      skillsDir: '.agent/skills',
+      installedSkills: ['aif', 'aif-plan'],
+      mcp: { github: false, filesystem: false, postgres: false, chromeDevtools: false, playwright: false },
+    };
+    legacyAgent.managedSkills = await buildManagedSkillsState(LEGACY_DIR, legacyAgent, legacyAgent.installedSkills);
+
+    fs.writeFileSync(path.join(LEGACY_DIR, '.ai-factory.json'), JSON.stringify({
+      version: '2.0.0',
+      agents: [legacyAgent],
+      extensions: [],
+    }, null, 2));
+
+    const upgradeOutput = execSync(`node "${cliPath}" upgrade`, {
+      cwd: LEGACY_DIR,
+      encoding: 'utf8',
+      stdio: 'pipe',
+    });
+    console.log(upgradeOutput);
+
+    // Verify legacy .agent/workflows and .agent/rules are completely purged
+    assert(!fs.existsSync(legacyWorkflows), 'Legacy .agent/workflows must be completely purged on upgrade');
+    assert(!fs.existsSync(legacyRules), 'Legacy .agent/rules must be completely purged on upgrade');
+
+    // Verify modern Antigravity 2.0 structure is installed
+    assert(fs.existsSync(path.join(LEGACY_DIR, '.agents', 'skills', 'aif', 'SKILL.md')), 'Modern .agents/skills/aif/SKILL.md must be installed');
+    assert(fs.existsSync(path.join(LEGACY_DIR, '.agents', 'subagents', 'implement-coordinator.md')), 'Modern .agents/subagents/ must be installed');
+
+    // Verify .ai-factory.json migrated skillsDir
+    const upgradedConfig = JSON.parse(fs.readFileSync(path.join(LEGACY_DIR, '.ai-factory.json'), 'utf8'));
+    const upgradedAg = upgradedConfig.agents.find(a => a.id === 'antigravity');
+    assert.strictEqual(upgradedAg.skillsDir, '.agents/skills', 'skillsDir must be migrated to .agents/skills');
+    assert.strictEqual(upgradedAg.agentsDir, '.agents/subagents', 'agentsDir must be .agents/subagents');
+    console.log('✓ Legacy Antigravity 1.0 deinstallation and v2 upgrade verified successfully!');
+  } finally {
+    if (fs.existsSync(LEGACY_DIR)) {
+      fs.rmSync(LEGACY_DIR, { recursive: true, force: true });
+    }
+  }
 
   console.log('\n✅ ALL ANTIGRAVITY 2.0 CHECKS PASSED SUCCESSFULLY!\n');
 } finally {

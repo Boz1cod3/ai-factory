@@ -109,12 +109,13 @@ export async function resolveSkillTargets(
     const previousSkillsDir = normalizeRelative(runtime.skillsDir || registry.skillsDir);
     const preferShared = options.select !== false && runtime.id === 'codex'
       && previousSkillsDir === '.codex/skills' && hasAgentsDirectory;
-    const skillsDir = preferShared ? '.agents/skills' : previousSkillsDir;
+    const isAntigravityLegacy = options.select !== false && runtime.id === 'antigravity' && previousSkillsDir === '.agent/skills';
+    const skillsDir = (preferShared || isAntigravityLegacy) ? '.agents/skills' : previousSkillsDir;
     const target = Object.freeze({
       id: runtime.id, previousSkillsDir, skillsDir,
       physicalPath: await physicalProjectPath(projectDir, skillsDir),
       sourcePhysicalPath: await physicalProjectPath(projectDir, previousSkillsDir),
-      reason: preferShared ? 'existing-agents-directory' as const : runtime.skillsDir ? 'persisted' as const : 'default' as const,
+      reason: preferShared ? 'existing-agents-directory' as const : isAntigravityLegacy ? 'default' as const : runtime.skillsDir ? 'persisted' as const : 'default' as const,
     });
     targets.push(target);
     const assets = [registry.agentsDir, runtime.agentsDir, registry.settingsFile,

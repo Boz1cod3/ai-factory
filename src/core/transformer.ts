@@ -112,7 +112,7 @@ const registry: Record<string, TransformerRegistration> = {
   },
   antigravity: {
     create: () => new AntigravityTransformer(),
-    identity: 'antigravity',
+    identity: 'default',
   },
 };
 
