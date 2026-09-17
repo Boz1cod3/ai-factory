@@ -25,7 +25,8 @@
     "clean": "rm -rf dist",
     "prepare": "npm run build",
     "prepublishOnly": "npm run clean && npm run build",
-    "link": "npm run build && npm link"
+    "link": "npm run build && npm link",
+    "sync:upstream": "node scripts/sync-upstream.mjs"
   },
   "keywords": [
     "claude",
