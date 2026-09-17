@@ -30,6 +30,11 @@ trigger: always_on
 - Prefer editing existing files over creating new ones
 - Run tests after making changes when test infrastructure exists
 
+## Language Conventions
+
+- Write implementation plans (\`PLAN.md\`), architectural specifications, code, variables, and code comments in English.
+- Write all user-facing responses, implementation logs, review comments, and task comments in Ukrainian.
+
 ## Skill Usage
 
 - Use \`/aif-explore\` to think through ideas before planning — no implementation, just exploration
