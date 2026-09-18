@@ -1,0 +1,1 @@
+{"version":3,"file":"default.d.ts","sourceRoot":"","sources":["../../../src/core/transformers/default.ts"],"names":[],"mappings":"AAAA,OAAO,KAAK,EAAE,gBAAgB,EAAE,eAAe,EAAE,MAAM,mBAAmB,CAAC;AAE3E,qBAAa,kBAAmB,YAAW,gBAAgB;IACzD,SAAS,CAAC,SAAS,EAAE,MAAM,EAAE,OAAO,EAAE,MAAM,GAAG,eAAe;IAS9D,iBAAiB,IAAI,MAAM,EAAE;CAM9B"}

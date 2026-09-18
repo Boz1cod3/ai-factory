@@ -1,0 +1,541 @@
+import chalk from 'chalk';
+import path from 'path';
+import { realpathSync } from 'fs';
+import { execSync } from 'child_process';
+import inquirer from 'inquirer';
+import { getCurrentVersion, hydrateAgentFileSources, loadConfig, saveConfig } from '../../core/config.js';
+import { compareExtensionVersions, getExtensionsDir, getNpmVersionCheckResult, loadAllExtensions } from '../../core/extensions.js';
+import { hydrateProjectAgentRegistry } from '../../core/agents.js';
+import { buildManagedConfigFilesState, buildExtensionAgentFileSources, buildManagedSkillsState, getAvailableSkills, partitionSkills, rebuildManagedAgentFilesForAgents, updateConfigFiles, updateSkills, updateSubagents, } from '../../core/installer.js';
+import { logSkillTarget, resolveSkillTargets } from '../../core/skill-targets.js';
+import { prepareSkillTargets, withSkillProjectLock } from '../../core/skills-migration.js';
+import { installExtensionSkillsForAllAgents, installExtensionAgentFilesForAllAgents, installSkillsForAllAgents, collectReplacedSkills, mergeAgentFileSources, mergeInstalledAgentFiles, refreshExtensions, composeInstalledExtensionSkills, } from '../../core/extension-ops.js';
+import { fileExists } from '../../utils/fs.js';
+function formatReason(reason) {
+    switch (reason) {
+        case 'source-hash-changed':
+            return 'source changed';
+        case 'installed-hash-drift':
+            return 'local drift';
+        case 'local-modifications-preserved':
+            return 'local changes preserved';
+        case 'force-ignored-local-modifications-preserved':
+            return '--force ignored; local changes preserved';
+        case 'missing-managed-state':
+            return 'state missing';
+        case 'missing-installed-artifact':
+            return 'artifact missing';
+        case 'package-removed':
+            return 'removed from package';
+        case 'new-skill-not-installed':
+            return 'new in package';
+        case 'new-in-package':
+            return 'new in package';
+        case 'replaced-by-extension':
+            return 'replaced by extension';
+        case 'force-clean-reinstall':
+            return 'force reinstall';
+        case 'install-failed':
+            return 'install failed';
+        case 'source-missing':
+            return 'source unavailable';
+        case 'extension-refresh':
+            return 'extension refresh';
+        case 'untracked-target-exists':
+            return 'untracked file exists';
+        default:
+            return reason;
+    }
+}
+async function promptForNewSkills(availableSkills, agents, excludedSkills) {
+    const candidates = availableSkills.filter(skill => {
+        if (excludedSkills.has(skill)) {
+            return false;
+        }
+        return agents.some(agent => !partitionSkills(agent.installedSkills).base.includes(skill));
+    });
+    if (candidates.length === 0) {
+        return [];
+    }
+    if (!process.stdin.isTTY) {
+        console.log(chalk.dim(`New base skills available but not installed: ${candidates.join(', ')}`));
+        console.log(chalk.dim('Non-interactive mode — skipping new skills. Re-run `ai-factory update` interactively to add them.\n'));
+        return [];
+    }
+    console.log(chalk.cyan(`New base skills available: ${candidates.join(', ')}`));
+    const { selectedNewSkills } = await inquirer.prompt([{
+            type: 'checkbox',
+            name: 'selectedNewSkills',
+            message: 'Add new base skills to configured agents?',
+            choices: candidates.map(skill => ({ name: skill, value: skill, checked: true })),
+        }]);
+    return Array.isArray(selectedNewSkills) ? selectedNewSkills : [];
+}
+function groupAndSortEntriesByStatus(entries, sortKey) {
+    const sort = (arr) => [...arr].sort((a, b) => sortKey(a).localeCompare(sortKey(b)));
+    return {
+        changed: sort(entries.filter(entry => entry.status === 'changed')),
+        unchanged: sort(entries.filter(entry => entry.status === 'unchanged')),
+        skipped: sort(entries.filter(entry => entry.status === 'skipped')),
+        removed: sort(entries.filter(entry => entry.status === 'removed')),
+    };
+}
+function isNewerVersion(latest, current) {
+    return compareExtensionVersions(latest, current) > 0;
+}
+async function getLatestVersion() {
+    const versionCheck = await getNpmVersionCheckResult('ai-factory', getCurrentVersion());
+    return versionCheck.latestVersion;
+}
+function getInstallCommand(version) {
+    try {
+        const whichCmd = process.platform === 'win32' ? 'where' : 'which';
+        const binPath = execSync(`${whichCmd} ai-factory`, {
+            encoding: 'utf-8',
+            timeout: 5000,
+            stdio: ['pipe', 'pipe', 'pipe'],
+        }).split('\n')[0].trim();
+        const realPath = realpathSync(binPath).replaceAll('\\', '/');
+        if (realPath.includes('.bun/'))
+            return `bun add -g ai-factory@${version}`;
+        if (realPath.includes('/mise/'))
+            return `mise use -g npm:ai-factory@${version}`;
+        if (realPath.includes('/volta/'))
+            return `volta install ai-factory@${version}`;
+        if (realPath.includes('/pnpm/'))
+            return `pnpm add -g ai-factory@${version}`;
+        if (realPath.includes('/yarn/'))
+            return `yarn global add ai-factory@${version}`;
+    }
+    catch {
+        // Binary not found or symlink resolution failed, default to npm
+    }
+    return `npm install -g ai-factory@${version}`;
+}
+function printPackageUpdateHint(latestVersion) {
+    const installCmd = getInstallCommand(latestVersion);
+    console.log(chalk.cyan(`Run: ${installCmd}`));
+    console.log(chalk.dim('New CLI commands and package-level features are available only after updating the ai-factory package.'));
+    console.log(chalk.dim('After updating, re-run `ai-factory update` in the project to refresh skills and agent assets.\n'));
+}
+async function selfUpdate(currentVersion) {
+    const latestVersion = await getLatestVersion();
+    if (!latestVersion) {
+        console.log(chalk.dim('Could not check for new versions\n'));
+        return false;
+    }
+    if (!isNewerVersion(latestVersion, currentVersion)) {
+        console.log(chalk.dim('ai-factory is up to date\n'));
+        return false;
+    }
+    console.log(chalk.cyan(`📦 New version available: ${currentVersion} → ${latestVersion}`));
+    if (!process.stdin.isTTY) {
+        console.log(chalk.dim('Non-interactive mode — skipping self-update.'));
+        printPackageUpdateHint(latestVersion);
+        return false;
+    }
+    const { shouldUpdate } = await inquirer.prompt([{
+            type: 'confirm',
+            name: 'shouldUpdate',
+            message: `Update ai-factory to ${latestVersion}?`,
+            default: true,
+        }]);
+    if (!shouldUpdate) {
+        console.log(chalk.dim('Skipping package update.'));
+        printPackageUpdateHint(latestVersion);
+        return false;
+    }
+    try {
+        const installCmd = getInstallCommand(latestVersion);
+        console.log(chalk.dim(`\n$ ${installCmd}`));
+        execSync(installCmd, { stdio: 'inherit' });
+        console.log(chalk.green(`\n✓ Updated to ${latestVersion}`));
+        console.log(chalk.cyan('Please re-run `ai-factory update` to update skills with the new version.\n'));
+        process.exitCode = 75; // EX_TEMPFAIL — signals caller to re-run
+        return true;
+    }
+    catch (error) {
+        console.log(chalk.yellow(`⚠ Self-update failed: ${error.message}`));
+        printPackageUpdateHint(latestVersion);
+        return false;
+    }
+}
+export async function updateCommand(options = {}) {
+    return withSkillProjectLock(process.cwd(), () => updateLocked(options));
+}
+async function updateLocked(options) {
+    const projectDir = process.cwd();
+    const force = Boolean(options.force);
+    console.log(chalk.bold.blue('\n🏭 AI Factory - Update Skills\n'));
+    const config = await loadConfig(projectDir);
+    if (!config) {
+        console.log(chalk.red('Error: No .ai-factory.json found.'));
+        console.log(chalk.dim('Run "ai-factory init" to set up your project first.'));
+        process.exit(1);
+    }
+    await hydrateProjectAgentRegistry(projectDir, {
+        extensionNames: config.extensions?.map(extension => extension.name) ?? [],
+    });
+    await prepareSkillTargets(projectDir, config);
+    const currentVersion = getCurrentVersion();
+    console.log(chalk.dim(`Config version: ${config.version}`));
+    console.log(chalk.dim(`Package version: ${currentVersion}\n`));
+    const selfUpdated = await selfUpdate(currentVersion);
+    if (selfUpdated)
+        return;
+    const extensions = config.extensions ?? [];
+    const refreshedExtensions = new Set();
+    const refreshedCustomSkills = new Map();
+    if (force) {
+        console.log(chalk.yellow('⚠ Force mode enabled: clean reinstall of installed base skills\n'));
+    }
+    if (extensions.length > 0) {
+        console.log(chalk.dim('Refreshing extensions...\n'));
+        const extensionSummary = await refreshExtensions(projectDir, config, {
+            force,
+            log: (level, message) => {
+                if (level === 'warn') {
+                    console.log(chalk.yellow(`  ⚠ ${message}`));
+                }
+                else {
+                    console.log(chalk.dim(`  ${message}`));
+                }
+            },
+        });
+        if (extensionSummary.updated.length > 0) {
+            for (const r of extensionSummary.updated) {
+                refreshedExtensions.add(r.name);
+                if (r.customSkillInstalls)
+                    refreshedCustomSkills.set(r.name, r.customSkillInstalls);
+                console.log(chalk.green(`  ✓ ${r.name}: v${r.oldVersion} → v${r.newVersion}`));
+            }
+        }
+        for (const r of extensionSummary.skipped) {
+            if (r.failureReason === 'rate-limited') {
+                console.log(chalk.yellow(`  ⚠ ${r.name}: GitHub API rate limited`));
+            }
+            else if (r.failureReason === 'lookup-failed') {
+                console.log(chalk.yellow(`  ⚠ ${r.name}: extension version check failed`));
+            }
+            else if (r.failureReason === 'source-type-requires-force') {
+                console.log(chalk.dim(`  - ${r.name}: source type requires --force`));
+            }
+        }
+        for (const r of extensionSummary.failed) {
+            console.log(chalk.yellow(`  ⚠ ${r.name}: ${r.failureReason}`));
+        }
+        console.log(chalk.dim(`Extensions: ${extensionSummary.updated.length} updated, ${extensionSummary.unchanged.length} unchanged, ${extensionSummary.failed.length} failed\n`));
+        await hydrateProjectAgentRegistry(projectDir, {
+            extensionNames: config.extensions?.map(extension => extension.name) ?? [],
+        });
+    }
+    console.log(chalk.dim('Updating skills and agent assets...\n'));
+    try {
+        const availableSkills = await getAvailableSkills();
+        const skillEntriesByAgent = new Map();
+        const subagentEntriesByAgent = new Map();
+        const configFileEntriesByAgent = new Map();
+        const installedExtensions = extensions.length > 0
+            ? await loadAllExtensions(projectDir, extensions.map(extension => extension.name))
+            : [];
+        const extensionManifests = new Map(installedExtensions.map(({ manifest }) => [manifest.name, manifest]));
+        await hydrateAgentFileSources(projectDir, config, {
+            installedExtensions,
+        });
+        const allReplacedSkills = collectReplacedSkills(extensions);
+        if (allReplacedSkills.size > 0) {
+            console.log(chalk.dim(`Skipping replaced skills: ${[...allReplacedSkills].join(', ')}`));
+        }
+        const selectedNewSkills = await promptForNewSkills(availableSkills, config.agents, allReplacedSkills);
+        const groups = await resolveSkillTargets(projectDir, config.agents, { select: false });
+        for (const group of groups) {
+            const participants = config.agents.filter(agent => group.targets.some(target => target.id === agent.id));
+            const representative = { ...participants[0], skillsDir: group.skillsDir,
+                installedSkills: [...new Set(participants.flatMap(agent => agent.installedSkills))],
+                managedSkills: Object.assign({}, ...participants.map(agent => agent.managedSkills ?? {})),
+            };
+            const result = await updateSkills(representative, projectDir, {
+                excludeSkills: [...allReplacedSkills],
+                force,
+                installNewSkills: selectedNewSkills,
+                renderContext: group.context,
+            });
+            for (const agent of participants) {
+                const previous = new Set(agent.installedSkills);
+                agent.installedSkills = result.installedSkills.filter(skill => previous.has(skill) || selectedNewSkills.includes(skill));
+                skillEntriesByAgent.set(agent.id, result.entries.filter(entry => previous.has(entry.skill) || !representative.installedSkills.includes(entry.skill)));
+            }
+        }
+        for (const agent of config.agents) {
+            const subagentResult = await updateSubagents(agent, projectDir, { force });
+            agent.installedAgentFiles = subagentResult.installedAgentFiles;
+            agent.agentFileSources = subagentResult.agentFileSources;
+            subagentEntriesByAgent.set(agent.id, subagentResult.entries);
+            const configFileResult = await updateConfigFiles(agent, projectDir, { force });
+            agent.configFiles = configFileResult.configFiles;
+            agent.installedConfigFiles = configFileResult.installedConfigFiles;
+            configFileEntriesByAgent.set(agent.id, configFileResult.entries);
+        }
+        // Re-install replacement skills from extensions
+        // Fix 3: If manifest fails to load, fall back to installing the base skill
+        const failedReplacements = [];
+        for (const ext of extensions) {
+            if (refreshedExtensions.has(ext.name)) {
+                logSkillTarget('[FIX:155] update:retain-refreshed-replacements', { extension: ext.name });
+                continue;
+            }
+            if (!ext.replacedSkills?.length)
+                continue;
+            const extensionDir = path.join(getExtensionsDir(projectDir), ext.name);
+            const manifest = extensionManifests.get(ext.name);
+            if (!manifest?.replaces) {
+                console.log(chalk.yellow(`⚠ Extension "${ext.name}" manifest missing — restoring base skills: ${ext.replacedSkills.join(', ')}`));
+                failedReplacements.push(...ext.replacedSkills);
+                ext.replacedSkills = [];
+                continue;
+            }
+            const nameOverrides = { ...manifest.replaces };
+            const manifestBaseSkills = new Set(Object.values(manifest.replaces));
+            const replacePaths = Object.entries(manifest.replaces)
+                .filter(([, baseSkill]) => ext.replacedSkills.includes(baseSkill))
+                .map(([extPath]) => extPath);
+            // Detect replacedSkills in config that no longer exist in manifest.replaces
+            const orphanedReplacements = ext.replacedSkills.filter(s => !manifestBaseSkills.has(s));
+            if (orphanedReplacements.length > 0) {
+                console.log(chalk.yellow(`⚠ Extension "${ext.name}" no longer replaces: ${orphanedReplacements.join(', ')}`));
+                failedReplacements.push(...orphanedReplacements);
+                ext.replacedSkills = ext.replacedSkills.filter(s => manifestBaseSkills.has(s));
+            }
+            if (replacePaths.length > 0) {
+                const results = await installExtensionSkillsForAllAgents(projectDir, config.agents, extensionDir, replacePaths, nameOverrides);
+                // Detect replacements that failed to install on all agents
+                const agentCount = config.agents.length;
+                for (const [extPath, baseSkill] of Object.entries(manifest.replaces)) {
+                    if (!ext.replacedSkills.includes(baseSkill))
+                        continue;
+                    if (!replacePaths.includes(extPath))
+                        continue;
+                    let successCount = 0;
+                    for (const installed of results.values()) {
+                        if (installed.includes(baseSkill))
+                            successCount++;
+                    }
+                    if (successCount < agentCount) {
+                        console.log(chalk.yellow(`⚠ Extension "${ext.name}" replacement "${baseSkill}" failed to install — restoring base skill`));
+                        failedReplacements.push(baseSkill);
+                        ext.replacedSkills = ext.replacedSkills.filter(s => s !== baseSkill);
+                    }
+                }
+            }
+        }
+        // Install base skills that couldn't be replaced due to broken extensions
+        // But only if no other extension still replaces them
+        if (failedReplacements.length > 0) {
+            const stillReplacedByOthers = collectReplacedSkills(extensions);
+            const toRestore = failedReplacements.filter(s => !stillReplacedByOthers.has(s));
+            if (toRestore.length > 0) {
+                await installSkillsForAllAgents(projectDir, config.agents, toRestore);
+            }
+        }
+        // Re-install extension-managed agent files so ordinary updates heal drift
+        // even when the extension version itself did not change.
+        for (const ext of extensions) {
+            const extensionDir = path.join(getExtensionsDir(projectDir), ext.name);
+            const manifest = extensionManifests.get(ext.name);
+            if (!manifest?.agentFiles?.length) {
+                const preservesTrackedAgentFiles = config.agents.some(agent => Object.values(agent.agentFileSources ?? {}).some(source => source.kind === 'extension' && source.extensionName === ext.name));
+                if (preservesTrackedAgentFiles) {
+                    console.log(chalk.yellow(`⚠ Extension "${ext.name}" agent file manifest missing — preserving tracked agent file state`));
+                }
+                continue;
+            }
+            const results = await installExtensionAgentFilesForAllAgents(projectDir, config.agents, extensionDir, manifest);
+            mergeInstalledAgentFiles(config.agents, results);
+            mergeAgentFileSources(config.agents, buildExtensionAgentFileSources(manifest));
+            for (const [agentId, installed] of results) {
+                if (installed.length === 0) {
+                    continue;
+                }
+                const existingEntries = subagentEntriesByAgent.get(agentId) ?? [];
+                existingEntries.push(...installed.map(subagent => ({
+                    subagent,
+                    status: 'changed',
+                    reason: 'extension-refresh',
+                })));
+                subagentEntriesByAgent.set(agentId, existingEntries);
+            }
+        }
+        // Re-apply extension injections
+        if (config.extensions?.length) {
+            const totalInjections = await composeInstalledExtensionSkills(projectDir, config, {
+                installReplacements: false, customSkillInstalls: refreshedCustomSkills,
+            });
+            if (totalInjections > 0) {
+                console.log(chalk.green(`✓ Re-applied ${totalInjections} extension injection(s)`));
+            }
+        }
+        // Rebuild managed state after final update + replacement + injection pipeline.
+        const finalReplacedSkills = collectReplacedSkills(extensions);
+        for (const agent of config.agents) {
+            const { base: baseSkills } = partitionSkills(agent.installedSkills);
+            const managedBaseSkills = baseSkills.filter(skill => availableSkills.includes(skill) && !finalReplacedSkills.has(skill));
+            const managedSkills = await buildManagedSkillsState(projectDir, agent, managedBaseSkills, groups.find(group => group.targets.some(target => target.id === agent.id)).context, config.extensions ?? []);
+            agent.managedSkills = managedSkills;
+            if ((agent.configFiles ?? []).length > 0) {
+                agent.managedConfigFiles = await buildManagedConfigFilesState(projectDir, agent, agent.installedConfigFiles ?? []);
+            }
+            else {
+                agent.managedConfigFiles = {};
+            }
+        }
+        await rebuildManagedAgentFilesForAgents(projectDir, config.agents, {
+            preserveExistingOnMissingSource: true,
+            warn: (message) => console.log(chalk.yellow(`⚠ ${message}`)),
+        });
+        config.version = currentVersion;
+        await saveConfig(projectDir, config, {
+            installedExtensions,
+        });
+        console.log(chalk.green('✓ Skills and agent assets updated successfully'));
+        console.log(chalk.green('✓ Configuration updated'));
+        for (const agent of config.agents) {
+            const entries = skillEntriesByAgent.get(agent.id) ?? [];
+            const grouped = groupAndSortEntriesByStatus(entries, e => e.skill);
+            const changedWithContextWarnings = [];
+            for (const entry of grouped.changed) {
+                const skillContextPath = path.join(projectDir, '.ai-factory', 'skill-context', entry.skill, 'SKILL.md');
+                if (await fileExists(skillContextPath)) {
+                    changedWithContextWarnings.push(entry.skill);
+                }
+            }
+            console.log(chalk.bold(`\n[${agent.id}] Status:`));
+            console.log(chalk.dim(`  changed: ${grouped.changed.length}`));
+            console.log(chalk.dim(`  unchanged: ${grouped.unchanged.length}`));
+            console.log(chalk.dim(`  skipped: ${grouped.skipped.length}`));
+            console.log(chalk.dim(`  removed: ${grouped.removed.length}`));
+            if (grouped.changed.length > 0) {
+                console.log(chalk.bold('  Changed:'));
+                for (const entry of grouped.changed) {
+                    console.log(chalk.dim(`    - ${entry.skill} (${formatReason(entry.reason)})`));
+                }
+            }
+            if (grouped.skipped.length > 0) {
+                console.log(chalk.bold('  Skipped:'));
+                for (const entry of grouped.skipped) {
+                    console.log(chalk.dim(`    - ${entry.skill} (${formatReason(entry.reason)})`));
+                }
+            }
+            if (grouped.removed.length > 0) {
+                console.log(chalk.bold('  Removed:'));
+                for (const entry of grouped.removed) {
+                    console.log(chalk.dim(`    - ${entry.skill} (${formatReason(entry.reason)})`));
+                }
+            }
+            const recoveryEntries = grouped.changed.filter(entry => [
+                'missing-managed-state',
+                'missing-installed-artifact',
+                'source-missing',
+            ].includes(entry.reason));
+            if (recoveryEntries.length > 0) {
+                console.log(chalk.yellow('  WARN: managed state recovered for:'));
+                for (const entry of recoveryEntries) {
+                    console.log(chalk.yellow(`    - ${entry.skill} (${formatReason(entry.reason)})`));
+                }
+            }
+            if (changedWithContextWarnings.length > 0) {
+                console.log(chalk.yellow('  WARN: skill-context override may need review for changed skills:'));
+                for (const skill of changedWithContextWarnings) {
+                    console.log(chalk.yellow(`    - ${skill} (.ai-factory/skill-context/${skill}/SKILL.md)`));
+                }
+            }
+            const subagentEntries = subagentEntriesByAgent.get(agent.id) ?? [];
+            if (agent.agentsDir || subagentEntries.length > 0) {
+                const groupedSubagents = groupAndSortEntriesByStatus(subagentEntries, e => e.subagent);
+                console.log(chalk.bold(`[${agent.id}] Agent files:`));
+                console.log(chalk.dim(`  changed: ${groupedSubagents.changed.length}`));
+                console.log(chalk.dim(`  unchanged: ${groupedSubagents.unchanged.length}`));
+                console.log(chalk.dim(`  skipped: ${groupedSubagents.skipped.length}`));
+                console.log(chalk.dim(`  removed: ${groupedSubagents.removed.length}`));
+                if (groupedSubagents.changed.length > 0) {
+                    console.log(chalk.bold('  Changed:'));
+                    for (const entry of groupedSubagents.changed) {
+                        console.log(chalk.dim(`    - ${entry.subagent} (${formatReason(entry.reason)})`));
+                    }
+                }
+                if (groupedSubagents.skipped.length > 0) {
+                    console.log(chalk.bold('  Skipped:'));
+                    for (const entry of groupedSubagents.skipped) {
+                        console.log(chalk.dim(`    - ${entry.subagent} (${formatReason(entry.reason)})`));
+                    }
+                }
+                if (groupedSubagents.removed.length > 0) {
+                    console.log(chalk.bold('  Removed:'));
+                    for (const entry of groupedSubagents.removed) {
+                        console.log(chalk.dim(`    - ${entry.subagent} (${formatReason(entry.reason)})`));
+                    }
+                }
+                const recoveredSubagents = groupedSubagents.changed.filter(entry => [
+                    'missing-managed-state',
+                    'missing-installed-artifact',
+                    'source-missing',
+                ].includes(entry.reason));
+                if (recoveredSubagents.length > 0) {
+                    console.log(chalk.yellow('  WARN: managed agent file state recovered for:'));
+                    for (const entry of recoveredSubagents) {
+                        console.log(chalk.yellow(`    - ${entry.subagent} (${formatReason(entry.reason)})`));
+                    }
+                }
+            }
+            const configFileEntries = configFileEntriesByAgent.get(agent.id) ?? [];
+            if ((agent.configFiles ?? []).length > 0 || configFileEntries.length > 0) {
+                const groupedConfigFiles = groupAndSortEntriesByStatus(configFileEntries, e => e.configFile);
+                console.log(chalk.bold(`[${agent.id}] Config files:`));
+                console.log(chalk.dim(`  changed: ${groupedConfigFiles.changed.length}`));
+                console.log(chalk.dim(`  unchanged: ${groupedConfigFiles.unchanged.length}`));
+                console.log(chalk.dim(`  skipped: ${groupedConfigFiles.skipped.length}`));
+                console.log(chalk.dim(`  removed: ${groupedConfigFiles.removed.length}`));
+                if (groupedConfigFiles.changed.length > 0) {
+                    console.log(chalk.bold('  Changed:'));
+                    for (const entry of groupedConfigFiles.changed) {
+                        console.log(chalk.dim(`    - ${entry.configFile} (${formatReason(entry.reason)})`));
+                    }
+                }
+                if (groupedConfigFiles.skipped.length > 0) {
+                    console.log(chalk.bold('  Skipped:'));
+                    for (const entry of groupedConfigFiles.skipped) {
+                        console.log(chalk.dim(`    - ${entry.configFile} (${formatReason(entry.reason)})`));
+                    }
+                }
+                if (groupedConfigFiles.removed.length > 0) {
+                    console.log(chalk.bold('  Removed:'));
+                    for (const entry of groupedConfigFiles.removed) {
+                        console.log(chalk.dim(`    - ${entry.configFile} (${formatReason(entry.reason)})`));
+                    }
+                }
+                const recoveredConfigFiles = groupedConfigFiles.changed.filter(entry => [
+                    'missing-managed-state',
+                    'missing-installed-artifact',
+                ].includes(entry.reason));
+                if (recoveredConfigFiles.length > 0) {
+                    console.log(chalk.yellow('  WARN: managed config state recovered for:'));
+                    for (const entry of recoveredConfigFiles) {
+                        console.log(chalk.yellow(`    - ${entry.configFile} (${formatReason(entry.reason)})`));
+                    }
+                }
+            }
+            const { custom: customSkills } = partitionSkills(agent.installedSkills);
+            if (customSkills.length > 0) {
+                console.log(chalk.bold(`[${agent.id}] Custom skills (preserved):`));
+                for (const skill of customSkills) {
+                    console.log(chalk.dim(`  - ${skill}`));
+                }
+            }
+        }
+        console.log('');
+    }
+    catch (error) {
+        console.log(chalk.red(`Error updating skills: ${error.message}`));
+        process.exit(1);
+    }
+}
+//# sourceMappingURL=update.js.map

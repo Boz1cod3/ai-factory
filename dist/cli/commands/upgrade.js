@@ -1,0 +1,293 @@
+import chalk from 'chalk';
+import fs from 'fs-extra';
+import path from 'path';
+import { loadConfig, saveConfig, getCurrentVersion } from '../../core/config.js';
+import { buildManagedConfigFilesState, buildManagedSkillsState, buildManagedSubagentsState, installConfigFiles, installSkills, installSubagents, getAvailableSkills, partitionSkills, } from '../../core/installer.js';
+import { getAgentConfig, hydrateProjectAgentRegistry } from '../../core/agents.js';
+import { fileExists, removeDirectory, removeFile, listDirectories } from '../../utils/fs.js';
+import { resolveSkillTargets } from '../../core/skill-targets.js';
+import { prepareSkillTargets, recoverSkillMigration, withSkillProjectLock } from '../../core/skills-migration.js';
+import { collectReplacedSkills, composeInstalledExtensionSkills } from '../../core/extension-ops.js';
+// Old v1 skill directory names that were renamed to aif-* in v2
+const OLD_SKILL_NAMES = [
+    'architecture',
+    'best-practices',
+    'build-automation',
+    'ci',
+    'commit',
+    'dockerize',
+    'docs',
+    'evolve',
+    'feature',
+    'fix',
+    'implement',
+    'improve',
+    'review',
+    'security-checklist',
+    'skill-generator',
+    'task',
+    'verify',
+];
+// Old v2 skill directory names before aif-* migration
+const OLD_AIF_PREFIX_SKILL_NAMES = [
+    'ai-factory',
+    'ai-factory-architecture',
+    'ai-factory-best-practices',
+    'ai-factory-build-automation',
+    'ai-factory-ci',
+    'ai-factory-commit',
+    'ai-factory-dockerize',
+    'ai-factory-docs',
+    'ai-factory-evolve',
+    'ai-factory-fix',
+    'ai-factory-implement',
+    'ai-factory-improve',
+    'ai-factory-plan',
+    'ai-factory-review',
+    'ai-factory-roadmap',
+    'ai-factory-rules',
+    'ai-factory-security-checklist',
+    'ai-factory-skill-generator',
+    'ai-factory-verify',
+    // Transitional names that were removed earlier
+    'ai-factory-task',
+    'ai-factory-feature',
+];
+// Old workflow skills stored as flat .md files by Antigravity transformer
+const OLD_WORKFLOW_SKILLS = new Set([
+    'commit',
+    'feature',
+    'fix',
+    'implement',
+    'improve',
+    'task',
+    'verify',
+]);
+async function removeWorkflowFile(projectDir, configDir, skillName) {
+    const flatFile = path.join(projectDir, configDir, 'workflows', `${skillName}.md`);
+    if (await fileExists(flatFile)) {
+        await removeFile(flatFile);
+        return true;
+    }
+    if (configDir !== '.agent') {
+        const legacyFlatFile = path.join(projectDir, '.agent', 'workflows', `${skillName}.md`);
+        if (await fileExists(legacyFlatFile)) {
+            await removeFile(legacyFlatFile);
+            return true;
+        }
+    }
+    return false;
+}
+async function removeLegacySkillArtifacts(options) {
+    const { projectDir, configDir, skillsDir, agentId, skillName, removeWorkflow } = options;
+    let removedCount = 0;
+    if (removeWorkflow && await removeWorkflowFile(projectDir, configDir, skillName)) {
+        console.log(chalk.yellow(`  [${agentId}] Removed workflow: ${skillName}.md`));
+        removedCount++;
+    }
+    const oldDir = path.join(skillsDir, skillName);
+    if (await fileExists(oldDir)) {
+        await removeDirectory(oldDir);
+        console.log(chalk.yellow(`  [${agentId}] Removed skill: ${skillName}/`));
+        removedCount++;
+    }
+    return removedCount;
+}
+export async function upgradeCommand() {
+    return withSkillProjectLock(process.cwd(), () => upgradeLocked());
+}
+async function upgradeLocked() {
+    const projectDir = process.cwd();
+    console.log(chalk.bold.blue('\n🏭 AI Factory - Upgrade to v2\n'));
+    let config = await loadConfig(projectDir);
+    if (!config) {
+        console.log(chalk.red('Error: No .ai-factory.json found.'));
+        console.log(chalk.dim('Run "ai-factory init" to set up your project first.'));
+        process.exit(1);
+    }
+    if (config.agents.length === 0) {
+        console.log(chalk.red('Error: No agents configured in .ai-factory.json.'));
+        console.log(chalk.dim('Run "ai-factory init" to configure at least one agent.'));
+        process.exit(1);
+    }
+    await hydrateProjectAgentRegistry(projectDir, {
+        extensionNames: config.extensions?.map(extension => extension.name) ?? [],
+    });
+    await recoverSkillMigration(projectDir);
+    config = (await loadConfig(projectDir));
+    const oldSkillRoots = new Map(config.agents.map(agent => [agent.id, agent.skillsDir]));
+    const groups = await resolveSkillTargets(projectDir, config.agents);
+    const availableSkills = await getAvailableSkills();
+    // v1 names are handled by the explicit upgrade cleanup below. Only installed v2
+    // skills with verifiable receipts participate in the skills-only transaction.
+    const migrationConfig = structuredClone(config);
+    for (const agent of migrationConfig.agents)
+        agent.installedSkills = agent.installedSkills.filter(skill => availableSkills.includes(skill));
+    await prepareSkillTargets(projectDir, migrationConfig, groups);
+    config = (await loadConfig(projectDir));
+    // Step 1: Migrate legacy plan directories to .ai-factory/plans/
+    // Also ensure newer v2 working directories exist.
+    const aiFactoryDir = path.join(projectDir, '.ai-factory');
+    const featuresDir = path.join(projectDir, '.ai-factory', 'features');
+    const changesDir = path.join(projectDir, '.ai-factory', 'changes');
+    const plansDir = path.join(projectDir, '.ai-factory', 'plans');
+    const evolutionsDir = path.join(aiFactoryDir, 'evolutions');
+    const skillContextDir = path.join(aiFactoryDir, 'skill-context');
+    if (await fileExists(changesDir) && !(await fileExists(plansDir))) {
+        await fs.move(changesDir, plansDir);
+        console.log(chalk.green('✓ Renamed .ai-factory/changes/ → .ai-factory/plans/\n'));
+    }
+    if (await fileExists(featuresDir) && !(await fileExists(plansDir))) {
+        await fs.move(featuresDir, plansDir);
+        console.log(chalk.green('✓ Renamed .ai-factory/features/ → .ai-factory/plans/\n'));
+    }
+    // Newer v2 structure used by /aif-evolve for incremental patch processing.
+    await fs.ensureDir(evolutionsDir);
+    await fs.ensureDir(skillContextDir);
+    const legacyCursorPath = path.join(aiFactoryDir, 'patch-cursor.json');
+    const cursorPath = path.join(evolutionsDir, 'patch-cursor.json');
+    if (await fileExists(legacyCursorPath)) {
+        if (!(await fileExists(cursorPath))) {
+            await fs.move(legacyCursorPath, cursorPath);
+            console.log(chalk.green('✓ Moved .ai-factory/patch-cursor.json → .ai-factory/evolutions/patch-cursor.json\n'));
+        }
+        else {
+            await removeFile(legacyCursorPath);
+            console.log(chalk.yellow('  WARN: Both cursor files existed; removed .ai-factory/patch-cursor.json and kept .ai-factory/evolutions/patch-cursor.json as source of truth\n'));
+        }
+    }
+    const installedByTarget = new Map();
+    const cleanedRoots = new Set();
+    for (const agent of config.agents) {
+        const agentConfig = getAgentConfig(agent.id);
+        const skillsDir = path.join(projectDir, oldSkillRoots.get(agent.id) ?? agent.skillsDir);
+        const group = groups.find(group => group.targets.some(target => target.id === agent.id));
+        const isAntigravity = agent.id === 'antigravity';
+        let removedCount = 0;
+        console.log(chalk.dim(`Scanning for old-format skills [${agent.id}]...\n`));
+        for (const oldName of cleanedRoots.has(skillsDir) ? [] : OLD_SKILL_NAMES) {
+            removedCount += await removeLegacySkillArtifacts({
+                projectDir,
+                configDir: agentConfig.configDir,
+                skillsDir,
+                agentId: agent.id,
+                skillName: oldName,
+                removeWorkflow: isAntigravity && OLD_WORKFLOW_SKILLS.has(oldName),
+            });
+        }
+        // Remove old aif-task, aif-feature, and ai-factory-* skills
+        const obsoleteSkills = Array.from(new Set([
+            'aif-task', 'aif-feature',
+            ...OLD_SKILL_NAMES.map(n => `ai-factory-${n}`),
+            ...OLD_AIF_PREFIX_SKILL_NAMES,
+        ]));
+        for (const oldSkill of cleanedRoots.has(skillsDir) ? [] : obsoleteSkills) {
+            removedCount += await removeLegacySkillArtifacts({
+                projectDir,
+                configDir: agentConfig.configDir,
+                skillsDir,
+                agentId: agent.id,
+                skillName: oldSkill,
+                removeWorkflow: isAntigravity,
+            });
+        }
+        cleanedRoots.add(skillsDir);
+        if (isAntigravity) {
+            const legacyWorkflowsDir = path.join(projectDir, '.agent', 'workflows');
+            if (await fileExists(legacyWorkflowsDir)) {
+                await removeDirectory(legacyWorkflowsDir);
+                console.log(chalk.yellow(`  [antigravity] Removed legacy Antigravity 1.0 workflows: .agent/workflows/`));
+                removedCount++;
+            }
+            const legacyRulesDir = path.join(projectDir, '.agent', 'rules');
+            if (await fileExists(legacyRulesDir)) {
+                await removeDirectory(legacyRulesDir);
+                console.log(chalk.yellow(`  [antigravity] Removed legacy Antigravity 1.0 rules: .agent/rules/`));
+                removedCount++;
+            }
+            const legacyAgentDir = path.join(projectDir, '.agent');
+            if (await fileExists(legacyAgentDir)) {
+                const remaining = await listDirectories(legacyAgentDir);
+                if (remaining.length === 0) {
+                    await removeDirectory(legacyAgentDir);
+                    console.log(chalk.yellow(`  [antigravity] Removed empty legacy directory: .agent/`));
+                }
+            }
+            if (agent.skillsDir === '.agent/skills') {
+                agent.skillsDir = agentConfig.skillsDir;
+            }
+            if (!agent.agentsDir) {
+                agent.agentsDir = agentConfig.agentsDir;
+            }
+        }
+        if (removedCount === 0) {
+            console.log(chalk.dim(`  [${agent.id}] No old-format skills found.\n`));
+        }
+        else {
+            console.log(chalk.dim(`\n  [${agent.id}] Removed ${removedCount} old-format skill(s).\n`));
+        }
+        console.log(chalk.dim(`Installing new-format skills [${agent.id}]...\n`));
+        const { custom: customSkills } = partitionSkills(agent.installedSkills);
+        const installedSkills = installedByTarget.get(group.physicalPath) ?? await installSkills({
+            projectDir,
+            skillsDir: agent.skillsDir,
+            skills: availableSkills,
+            agentId: agent.id,
+            renderContext: group.context,
+        });
+        installedByTarget.set(group.physicalPath, installedSkills);
+        const installedAgentFiles = agent.agentsDir
+            ? await installSubagents({
+                projectDir,
+                agentId: agent.id,
+                agentsDir: agent.agentsDir,
+            })
+            : [];
+        const effectiveConfigFiles = agent.configFiles ?? agentConfig.configFiles ?? [];
+        const installedConfigFiles = effectiveConfigFiles.length > 0
+            ? await installConfigFiles({
+                projectDir,
+                agentId: agent.id,
+                configFiles: effectiveConfigFiles,
+                installedConfigFiles: agent.installedConfigFiles,
+                managedConfigFiles: agent.managedConfigFiles,
+            })
+            : [];
+        agent.installedSkills = [...installedSkills, ...customSkills];
+        if (agent.agentsDir) {
+            agent.installedAgentFiles = installedAgentFiles;
+            agent.managedAgentFiles = await buildManagedSubagentsState(projectDir, agent, installedAgentFiles);
+        }
+        if (effectiveConfigFiles.length > 0) {
+            agent.configFiles = effectiveConfigFiles;
+            agent.installedConfigFiles = installedConfigFiles;
+            agent.managedConfigFiles = await buildManagedConfigFilesState(projectDir, agent, installedConfigFiles);
+        }
+    }
+    await composeInstalledExtensionSkills(projectDir, config);
+    const replaced = collectReplacedSkills(config.extensions ?? []);
+    for (const agent of config.agents) {
+        agent.managedSkills = await buildManagedSkillsState(projectDir, agent, agent.installedSkills.filter(skill => availableSkills.includes(skill) && !replaced.has(skill)), groups.find(group => group.targets.some(target => target.id === agent.id)).context, config.extensions ?? []);
+    }
+    // Step 3: Update config to latest version and multi-agent schema
+    const currentVersion = getCurrentVersion();
+    config.version = currentVersion;
+    await saveConfig(projectDir, config);
+    // Step 4: Summary
+    console.log(chalk.green('✓ Upgrade to v2 complete!\n'));
+    for (const agent of config.agents) {
+        const { base: baseSkills, custom: customSkills } = partitionSkills(agent.installedSkills);
+        console.log(chalk.bold(`[${agent.id}] Installed skills:`));
+        for (const skill of baseSkills) {
+            console.log(chalk.dim(`  - ${skill}`));
+        }
+        if (customSkills.length > 0) {
+            console.log(chalk.bold(`[${agent.id}] Custom skills (preserved):`));
+            for (const skill of customSkills) {
+                console.log(chalk.dim(`  - ${skill}`));
+            }
+        }
+        console.log('');
+    }
+}
+//# sourceMappingURL=upgrade.js.map

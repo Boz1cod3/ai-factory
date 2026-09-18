@@ -1,0 +1,1 @@
+{"version":3,"file":"default.js","sourceRoot":"","sources":["../../../src/core/transformers/default.ts"],"names":[],"mappings":"AAEA,MAAM,OAAO,kBAAkB;IAC7B,SAAS,CAAC,SAAiB,EAAE,OAAe;QAC1C,OAAO;YACL,SAAS,EAAE,SAAS;YACpB,UAAU,EAAE,UAAU;YACtB,OAAO;YACP,IAAI,EAAE,KAAK;SACZ,CAAC;IACJ,CAAC;IAED,iBAAiB;QACf,OAAO;YACL,qCAAqC;YACrC,qEAAqE;SACtE,CAAC;IACJ,CAAC;CACF"}

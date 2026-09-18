@@ -1,0 +1,49 @@
+const SKILL_HINTS = {
+    'aif': 'Set up AI context',
+    'aif-archive': 'Archive completed plans and roadmap',
+    'aif-architecture': 'Generate architecture guide',
+    'aif-best-practices': 'Clean code guidelines',
+    'aif-build-automation': 'Build file automation',
+    'aif-ci': 'CI/CD pipeline setup',
+    'aif-commit': 'Conventional commit helper',
+    'aif-distillation': 'Distill sources into skills',
+    'aif-dockerize': 'Docker and Compose setup',
+    'aif-docs': 'Docs generation and maintenance',
+    'aif-evolve': 'Evolve skills from patches',
+    'aif-explore': 'Explore ideas and options',
+    'aif-fix': 'Fix specific bugs quickly',
+    'aif-grounded': 'Reliability gate (no guesses)',
+    'aif-implement': 'Execute current plan tasks',
+    'aif-improve': 'Improve existing plan quality',
+    'aif-loop': 'Iterative quality refinement loop',
+    'aif-plan': 'Plan tasks for feature',
+    'aif-qa': 'QA change-summary, test-plan, test-cases',
+    'aif-qa-check': 'Execute QA cases with human/browser',
+    'aif-reference': 'Create knowledge refs from URLs/docs',
+    'aif-review': 'Review staged changes/PR',
+    'aif-roadmap': 'Roadmap and milestones',
+    'aif-rules': 'Project rules and conventions',
+    'aif-rules-check': 'Standalone project rules gate',
+    'aif-security-checklist': 'Security audit checklist',
+    'aif-skill-generator': 'Generate new agent skills',
+    'aif-transfer': 'Transfer anonymized project experience',
+    'aif-verify': 'Verify implementation completeness',
+    'aif-warmup': 'Load project context for a new session',
+};
+const DEFAULT_SKILL_HINT = 'Additional custom skill';
+const DEFAULT_HINT_MAX_LENGTH = 44;
+function truncateHint(hint, maxLength) {
+    if (hint.length <= maxLength) {
+        return hint;
+    }
+    const base = hint.slice(0, Math.max(0, maxLength - 3)).trimEnd();
+    return `${base}...`;
+}
+export function getSkillHint(skillId) {
+    return SKILL_HINTS[skillId] ?? DEFAULT_SKILL_HINT;
+}
+export function formatSkillChoiceName(skillId, renderHint, maxHintLength = DEFAULT_HINT_MAX_LENGTH) {
+    const hint = truncateHint(getSkillHint(skillId), maxHintLength);
+    return `${skillId} ${renderHint(`- ${hint}`)}`;
+}
+//# sourceMappingURL=skill-hints.js.map
