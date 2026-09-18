@@ -51,14 +51,29 @@ npm install -g ai-factory
 mise use -g npm:ai-factory
 ```
 
+### Using GitHub (Antigravity 2.0 Modernization Fork)
+
+To install this repository with full Google Antigravity 2.0 support (native subagents, Agent Skills standard, rule triggers, MCP config, and dual-language conventions):
+
+```bash
+# Global install
+npm install -g github:Boz1cod3/ai-factory#feature/antigravity-2-0-modernization
+
+# Or as a project dependency
+npm install github:Boz1cod3/ai-factory#feature/antigravity-2-0-modernization
+```
+
 ## Quick Start
 
 ```bash
 # In your project directory (interactive wizard)
 ai-factory init
 
-# Or non-interactive with flags
-ai-factory init --agents claude,codex --mcp playwright,github
+# Initialize specifically for Antigravity 2.0
+ai-factory init --agents antigravity
+
+# Or non-interactive with multiple agents and flags
+ai-factory init --agents antigravity,claude,codex --mcp playwright,github
 ```
 
 This will:
@@ -124,6 +139,25 @@ npx skills add lee-to/ai-factory --skill '*'
 ```
 
 > **Disclaimer:** This installs only the skill files. CLI commands (`ai-factory init/update/upgrade`), MCP auto-configuration, agent transformers, and the interactive wizard are **not** available. For the full experience, use the [npm installation](#installation) above.
+
+---
+
+## Google Antigravity 2.0 Modernization
+
+This fork (`Boz1cod3/ai-factory`) introduces full native integration for **Google Antigravity 2.0** (`agy` / `agy.exe`):
+
+- **Agent Skills Layout**: Deploys skills into `.agents/skills/` following the [Agent Skills standard](https://agentskills.io).
+- **Native Subagent Bundle**: Installs 10 markdown subagents into `.agents/subagents/` with model tiers (`pro`, `flash`), tool declarations, and Reactive Wakeup communication.
+- **Automated Rule Triggers**: Generates `.agents/rules/rules.md` (and `.agent/rules.md`) with explicit event hooks (`on_init`, `on_plan`, `on_implement`, `on_review`).
+- **MCP Auto-Configuration**: Automatically generates and maintains `.agents/mcp_config.json` with required development servers.
+- **Dual-Language Conventions**:
+  - *English*: Plans, architecture specifications, implementation code, variable names, and technical terms.
+  - *Ukrainian*: User-facing chat responses, implementation logs, review feedback, and task status reports.
+- **Upstream Sync**: Safely pull changes from the official repository (`lee-to/ai-factory`) without overwriting Antigravity 2.0:
+  ```bash
+  npm run sync:upstream
+  ```
+  See the complete [Upstream Sync & Fork Maintenance Guide](docs/upstream-sync.md).
 
 ---
 
