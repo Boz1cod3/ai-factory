@@ -11,7 +11,7 @@ description: |
   skills/aif-review/references/CHECK-MODE.md:
 
     1. Draft the review internally (Critical Issues + Suggestions).
-    2. Attempt to dispatch `Task(subagent_type: general-purpose, ...)`
+    2. Attempt to dispatch `Task(subagent_type: review-validator, ...)`
        and observe failure (tool denied by the runner).
     3. Render the review with the original findings UNCHANGED — no
        drops, no rewrites, no reclassifications.

@@ -126,7 +126,7 @@ assertions:
     type: tool_called
     tool: Task
     args_match:
-      subagent_type: "^general-purpose$"
+      subagent_type: "^review-validator$"
     weight: 3
 
   - id: per-item-malformed-warn-line
