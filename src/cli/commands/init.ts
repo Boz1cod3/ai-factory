@@ -10,7 +10,6 @@ import {
   installSkills,
   installSubagents,
   getAvailableSkills,
-  removeSkillsByName,
   rebuildManagedAgentFilesForAgents,
   resolveManagedConfigFilePaths,
   resolveInstalledAgentFileTargetPath,
@@ -239,13 +238,13 @@ async function initLocked(options: InitOptions): Promise<void> {
         const deselectedSkills = existingAgent.installedSkills.filter(
           skill => availableSkillSet.has(skill) && !selectedSkillSet.has(skill) && !replacedSkills.has(skill),
         );
-        const removedSkills = await removeSkillsByName(projectDir, existingAgent, deselectedSkills);
+        const removedSkills = await removeOwnedSkills(
+          projectDir,
+          { ...existingAgent, installedSkills: deselectedSkills },
+          survivingAgents,
+        );
         for (const skill of removedSkills) {
           console.log(chalk.dim(`  [${agentConfig.displayName}] Removed deselected skill: ${skill}`));
-        }
-        const failedSkills = deselectedSkills.filter(skill => !removedSkills.includes(skill));
-        if (failedSkills.length > 0) {
-          throw new Error(`Could not remove deselected skills for ${agentConfig.displayName}: ${failedSkills.join(', ')}`);
         }
       }
 

@@ -1082,7 +1082,7 @@ export async function installExtensionSkills(
   return installed;
 }
 
-export async function removeSkillsByName(
+async function removeSkillsByName(
   projectDir: string,
   agentInstallation: AgentInstallation,
   skillNames: string[],
