@@ -155,6 +155,8 @@ export async function ensureDir(dirPath: string): Promise<void> {
   await fs.ensureDir(dirPath);
 }
 
+export const ensureDirectory = ensureDir;
+
 export async function removeDirectory(dirPath: string): Promise<void> {
   await fs.remove(dirPath);
 }
