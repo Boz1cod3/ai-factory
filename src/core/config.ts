@@ -1,7 +1,7 @@
 import path from 'path';
 import { createRequire } from 'module';
 import { readJsonFile, writeJsonFile, fileExists, getPackagePath, listFilesRecursive } from '../utils/fs.js';
-import { findAgentConfig, getAgentConfig } from './agents.js';
+import { AGENT_IDS, findAgentConfig, getAgentConfig } from './agents.js';
 import { loadAllExtensions, type InstalledExtensionManifest } from './extensions.js';
 
 const require = createRequire(import.meta.url);
@@ -263,9 +263,12 @@ export async function loadConfig(projectDir: string): Promise<AiFactoryConfig | 
         );
       }
 
-      const agentsDir = legacyAgent.agentsDir
+      let agentsDir = legacyAgent.agentsDir
         || legacyAgent.subagentsDir
         || agentConfig?.agentsDir;
+      if (agent.id === AGENT_IDS.antigravity && agentsDir === '.agents/subagents') {
+        agentsDir = '.agents/agents';
+      }
       const installedAgentFiles = Array.isArray(legacyAgent.installedAgentFiles)
         ? legacyAgent.installedAgentFiles
         : Array.isArray(legacyAgent.installedSubagents)

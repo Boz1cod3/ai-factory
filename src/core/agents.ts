@@ -186,7 +186,7 @@ const BUILTIN_AGENT_REGISTRY: Record<string, AgentConfig> = {
     displayName: 'Antigravity',
     configDir: '.agents',
     skillsDir: '.agents/skills',
-    agentsDir: '.agents/subagents',
+    agentsDir: '.agents/agents',
     agentFileExtension: '.md',
     agentsSourceDir: 'subagents/antigravity/agents',
     settingsFile: '.agents/mcp_config.json',
