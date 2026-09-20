@@ -390,7 +390,7 @@ assert_exists "$AG_PROJECT_DIR/.agents/skills/aif/references/config-template.yam
 assert_exists "$AG_PROJECT_DIR/.agents/mcp_config.json" "antigravity init must create .agents/mcp_config.json"
 assert_exists "$AG_PROJECT_DIR/.agents/rules/aif-guardrails.md" "antigravity init must create .agents/rules/aif-guardrails.md"
 assert_exists "$AG_PROJECT_DIR/.agents/rules/aif-conventions.md" "antigravity init must create .agents/rules/aif-conventions.md"
-assert_exists "$AG_PROJECT_DIR/.agents/subagents/implement-coordinator.md" "antigravity init must install implement-coordinator subagent"
+assert_exists "$AG_PROJECT_DIR/.agents/agents/implement-coordinator.md" "antigravity init must install implement-coordinator subagent"
 assert_not_exists "$AG_PROJECT_DIR/.agent/workflows" "legacy .agent/workflows/ must not exist in Antigravity 2.0"
 
 echo "antigravity 2.0 init smoke tests passed"

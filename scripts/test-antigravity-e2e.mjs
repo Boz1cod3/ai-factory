@@ -56,8 +56,8 @@ try {
   assert(mcpJson.mcpServers.filesystem, 'mcp_config.json must include filesystem server');
 
   // 4. Check Subagents
-  const subagentsDir = path.join(TEST_DIR, '.agents', 'subagents');
-  assert(fs.existsSync(subagentsDir), '.agents/subagents/ must exist');
+  const subagentsDir = path.join(TEST_DIR, '.agents', 'agents');
+  assert(fs.existsSync(subagentsDir), '.agents/agents/ must exist');
   const expectedSubagents = [
     'implement-coordinator.md',
     'implement-worker.md',
@@ -72,7 +72,7 @@ try {
   ];
   for (const subagent of expectedSubagents) {
     const subagentPath = path.join(subagentsDir, subagent);
-    assert(fs.existsSync(subagentPath), `Subagent ${subagent} must be installed in .agents/subagents/`);
+    assert(fs.existsSync(subagentPath), `Subagent ${subagent} must be installed in .agents/agents/`);
     const content = fs.readFileSync(subagentPath, 'utf8');
     assert(content.includes('subagent: true'), `Subagent ${subagent} must declare subagent: true`);
   }
@@ -84,7 +84,7 @@ try {
   const agAgent = configJson.agents.find(a => a.id === 'antigravity');
   assert(agAgent, 'Antigravity agent must be in config.agents');
   assert.strictEqual(agAgent.skillsDir, '.agents/skills');
-  assert.strictEqual(agAgent.agentsDir, '.agents/subagents');
+  assert.strictEqual(agAgent.agentsDir, '.agents/agents');
   assert(agAgent.installedSkills.includes('aif'));
   assert(agAgent.installedSkills.includes('aif-plan'));
   assert.strictEqual(agAgent.installedAgentFiles.length, 10);
@@ -168,17 +168,77 @@ try {
 
     // Verify modern Antigravity 2.0 structure is installed
     assert(fs.existsSync(path.join(LEGACY_DIR, '.agents', 'skills', 'aif', 'SKILL.md')), 'Modern .agents/skills/aif/SKILL.md must be installed');
-    assert(fs.existsSync(path.join(LEGACY_DIR, '.agents', 'subagents', 'implement-coordinator.md')), 'Modern .agents/subagents/ must be installed');
+    assert(fs.existsSync(path.join(LEGACY_DIR, '.agents', 'agents', 'implement-coordinator.md')), 'Modern .agents/agents/ must be installed');
 
     // Verify .ai-factory.json migrated skillsDir
     const upgradedConfig = JSON.parse(fs.readFileSync(path.join(LEGACY_DIR, '.ai-factory.json'), 'utf8'));
     const upgradedAg = upgradedConfig.agents.find(a => a.id === 'antigravity');
     assert.strictEqual(upgradedAg.skillsDir, '.agents/skills', 'skillsDir must be migrated to .agents/skills');
-    assert.strictEqual(upgradedAg.agentsDir, '.agents/subagents', 'agentsDir must be .agents/subagents');
+    assert.strictEqual(upgradedAg.agentsDir, '.agents/agents', 'agentsDir must be .agents/agents');
     console.log('✓ Legacy Antigravity 1.0 deinstallation and v2 upgrade verified successfully!');
   } finally {
     if (fs.existsSync(LEGACY_DIR)) {
       fs.rmSync(LEGACY_DIR, { recursive: true, force: true });
+    }
+  }
+
+  // 10. Test upgrading an existing Antigravity project with legacy .agents/subagents
+  console.log('\nTesting: ai-factory upgrade from legacy .agents/subagents layout');
+  const SUBAGENTS_MIGRATION_DIR = path.join(ROOT_DIR, 'temp-test-subagents-migration');
+  try {
+    if (fs.existsSync(SUBAGENTS_MIGRATION_DIR)) {
+      fs.rmSync(SUBAGENTS_MIGRATION_DIR, { recursive: true, force: true });
+    }
+    fs.mkdirSync(SUBAGENTS_MIGRATION_DIR, { recursive: true });
+
+    const oldSubagentsDir = path.join(SUBAGENTS_MIGRATION_DIR, '.agents', 'subagents');
+    fs.mkdirSync(oldSubagentsDir, { recursive: true });
+    fs.writeFileSync(path.join(oldSubagentsDir, 'custom-agent.md'), '---\nname: custom-agent\nsubagent: true\n---\nCustom agent\n');
+
+    await installSkills({
+      projectDir: SUBAGENTS_MIGRATION_DIR,
+      agentId: 'antigravity',
+      skillsDir: '.agents/skills',
+      skills: ['aif', 'aif-plan'],
+    });
+
+    const agSubagentsAgent = {
+      id: 'antigravity',
+      skillsDir: '.agents/skills',
+      agentsDir: '.agents/subagents',
+      installedSkills: ['aif', 'aif-plan'],
+      installedAgentFiles: ['custom-agent.md'],
+      mcp: { github: false, filesystem: false, postgres: false, chromeDevtools: false, playwright: false },
+    };
+    agSubagentsAgent.managedSkills = await buildManagedSkillsState(SUBAGENTS_MIGRATION_DIR, agSubagentsAgent, agSubagentsAgent.installedSkills);
+
+    fs.writeFileSync(path.join(SUBAGENTS_MIGRATION_DIR, '.ai-factory.json'), JSON.stringify({
+      version: '2.18.0',
+      agents: [agSubagentsAgent],
+      extensions: [],
+    }, null, 2));
+
+    const migrationUpgradeOutput = execSync(`node "${cliPath}" upgrade`, {
+      cwd: SUBAGENTS_MIGRATION_DIR,
+      encoding: 'utf8',
+      stdio: 'pipe',
+    });
+    console.log(migrationUpgradeOutput);
+
+    // Verify .agents/subagents is removed and .agents/agents has files
+    assert(!fs.existsSync(oldSubagentsDir), 'Legacy .agents/subagents must be removed after upgrade');
+    const newAgentsDir = path.join(SUBAGENTS_MIGRATION_DIR, '.agents', 'agents');
+    assert(fs.existsSync(newAgentsDir), '.agents/agents must exist after upgrade');
+    assert(fs.existsSync(path.join(newAgentsDir, 'custom-agent.md')), 'Pre-existing custom-agent.md must be migrated to .agents/agents');
+    assert(fs.existsSync(path.join(newAgentsDir, 'implement-coordinator.md')), 'New agents must be installed in .agents/agents');
+
+    const migratedConfig = JSON.parse(fs.readFileSync(path.join(SUBAGENTS_MIGRATION_DIR, '.ai-factory.json'), 'utf8'));
+    const migratedAg = migratedConfig.agents.find(a => a.id === 'antigravity');
+    assert.strictEqual(migratedAg.agentsDir, '.agents/agents', 'agentsDir must be migrated to .agents/agents in config');
+    console.log('✓ Migration from .agents/subagents to .agents/agents verified successfully!');
+  } finally {
+    if (fs.existsSync(SUBAGENTS_MIGRATION_DIR)) {
+      fs.rmSync(SUBAGENTS_MIGRATION_DIR, { recursive: true, force: true });
     }
   }
 
