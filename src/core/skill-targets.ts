@@ -107,8 +107,9 @@ export async function resolveSkillTargets(
   for (const runtime of runtimes) {
     const registry = getAgentConfig(runtime.id);
     const previousSkillsDir = normalizeRelative(runtime.skillsDir || registry.skillsDir);
+    const hasAntigravity = runtimes.some(r => r.id === 'antigravity');
     const preferShared = options.select !== false && runtime.id === 'codex'
-      && previousSkillsDir === '.codex/skills' && hasAgentsDirectory;
+      && previousSkillsDir === '.codex/skills' && hasAgentsDirectory && !hasAntigravity;
     const isAntigravityLegacy = options.select !== false && runtime.id === 'antigravity' && previousSkillsDir === '.agent/skills';
     const skillsDir = (preferShared || isAntigravityLegacy) ? '.agents/skills' : previousSkillsDir;
     const target = Object.freeze({
