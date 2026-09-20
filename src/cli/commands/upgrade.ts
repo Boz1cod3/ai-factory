@@ -13,7 +13,7 @@ import {
   partitionSkills,
 } from '../../core/installer.js';
 import { getAgentConfig, hydrateProjectAgentRegistry } from '../../core/agents.js';
-import { fileExists, removeDirectory, removeFile } from '../../utils/fs.js';
+import { fileExists, removeDirectory, removeFile, listDirectories, copyFile, ensureDir, listFilesRecursive } from '../../utils/fs.js';
 import { resolveSkillTargets } from '../../core/skill-targets.js';
 import { prepareSkillTargets, recoverSkillMigration, withSkillProjectLock } from '../../core/skills-migration.js';
 import { collectReplacedSkills, composeInstalledExtensionSkills } from '../../core/extension-ops.js';
@@ -81,6 +81,13 @@ async function removeWorkflowFile(projectDir: string, configDir: string, skillNa
   if (await fileExists(flatFile)) {
     await removeFile(flatFile);
     return true;
+  }
+  if (configDir !== '.agent') {
+    const legacyFlatFile = path.join(projectDir, '.agent', 'workflows', `${skillName}.md`);
+    if (await fileExists(legacyFlatFile)) {
+      await removeFile(legacyFlatFile);
+      return true;
+    }
   }
   return false;
 }
@@ -227,6 +234,54 @@ async function upgradeLocked(): Promise<void> {
       });
     }
     cleanedRoots.add(skillsDir);
+
+    if (isAntigravity) {
+      const legacyWorkflowsDir = path.join(projectDir, '.agent', 'workflows');
+      if (await fileExists(legacyWorkflowsDir)) {
+        await removeDirectory(legacyWorkflowsDir);
+        console.log(chalk.yellow(`  [antigravity] Removed legacy Antigravity 1.0 workflows: .agent/workflows/`));
+        removedCount++;
+      }
+      const legacyRulesDir = path.join(projectDir, '.agent', 'rules');
+      if (await fileExists(legacyRulesDir)) {
+        await removeDirectory(legacyRulesDir);
+        console.log(chalk.yellow(`  [antigravity] Removed legacy Antigravity 1.0 rules: .agent/rules/`));
+        removedCount++;
+      }
+      const legacyAgentDir = path.join(projectDir, '.agent');
+      if (await fileExists(legacyAgentDir)) {
+        const remaining = await listDirectories(legacyAgentDir);
+        if (remaining.length === 0) {
+          await removeDirectory(legacyAgentDir);
+          console.log(chalk.yellow(`  [antigravity] Removed empty legacy directory: .agent/`));
+        }
+      }
+      if (agent.skillsDir === '.agent/skills') {
+        agent.skillsDir = agentConfig.skillsDir;
+      }
+      if (!agent.agentsDir || agent.agentsDir === '.agents/subagents') {
+        agent.agentsDir = agentConfig.agentsDir;
+      }
+
+      // Migrate legacy .agents/subagents to .agents/agents for Antigravity
+      const oldSubagentsDir = path.join(projectDir, '.agents', 'subagents');
+      const newAgentsDir = path.join(projectDir, '.agents', 'agents');
+      if (await fileExists(oldSubagentsDir)) {
+        if (!await fileExists(newAgentsDir)) {
+          await ensureDir(newAgentsDir);
+        }
+        const files = await listFilesRecursive(oldSubagentsDir);
+        for (const file of files) {
+          const relPath = path.relative(oldSubagentsDir, file);
+          const newPath = path.join(newAgentsDir, relPath);
+          if (!await fileExists(newPath)) {
+            await copyFile(file, newPath);
+          }
+        }
+        await removeDirectory(oldSubagentsDir);
+        agent.agentsDir = '.agents/agents';
+      }
+    }
 
     if (removedCount === 0) {
       console.log(chalk.dim(`  [${agent.id}] No old-format skills found.\n`));
