@@ -194,6 +194,9 @@ try {
     const oldSubagentsDir = path.join(SUBAGENTS_MIGRATION_DIR, '.agents', 'subagents');
     fs.mkdirSync(oldSubagentsDir, { recursive: true });
     fs.writeFileSync(path.join(oldSubagentsDir, 'custom-agent.md'), '---\nname: custom-agent\nsubagent: true\n---\nCustom agent\n');
+    const nestedSubDir = path.join(oldSubagentsDir, 'custom-group');
+    fs.mkdirSync(nestedSubDir, { recursive: true });
+    fs.writeFileSync(path.join(nestedSubDir, 'nested-agent.md'), '---\nname: nested-agent\nsubagent: true\n---\nNested agent\n');
 
     await installSkills({
       projectDir: SUBAGENTS_MIGRATION_DIR,
@@ -230,6 +233,7 @@ try {
     const newAgentsDir = path.join(SUBAGENTS_MIGRATION_DIR, '.agents', 'agents');
     assert(fs.existsSync(newAgentsDir), '.agents/agents must exist after upgrade');
     assert(fs.existsSync(path.join(newAgentsDir, 'custom-agent.md')), 'Pre-existing custom-agent.md must be migrated to .agents/agents');
+    assert(fs.existsSync(path.join(newAgentsDir, 'custom-group', 'nested-agent.md')), 'Pre-existing nested custom agent must be migrated to .agents/agents');
     assert(fs.existsSync(path.join(newAgentsDir, 'implement-coordinator.md')), 'New agents must be installed in .agents/agents');
 
     const migratedConfig = JSON.parse(fs.readFileSync(path.join(SUBAGENTS_MIGRATION_DIR, '.ai-factory.json'), 'utf8'));

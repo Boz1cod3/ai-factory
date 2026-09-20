@@ -31,7 +31,7 @@
 - Consumes: `AGENT_IDS.antigravity` from `src/core/agents.ts`
 - Produces: `AgentConfig` with `agentsDir: '.agents/agents'` and automatic runtime config migration
 
-- [ ] **Step 1: Update Antigravity AgentConfig in `src/core/agents.ts`**
+- [x] **Step 1: Update Antigravity AgentConfig in `src/core/agents.ts`**
 
 Change `agentsDir` from `'.agents/subagents'` to `'.agents/agents'`:
 ```typescript
@@ -50,7 +50,7 @@ Change `agentsDir` from `'.agents/subagents'` to `'.agents/agents'`:
   },
 ```
 
-- [ ] **Step 2: Add legacy config path migration in `src/core/config.ts`**
+- [x] **Step 2: Add legacy config path migration in `src/core/config.ts`**
 
 In `src/core/config.ts`, inside `normalizeAgentConfig()` or where `legacyAgent.agentsDir` is read:
 ```typescript
@@ -60,12 +60,12 @@ In `src/core/config.ts`, inside `normalizeAgentConfig()` or where `legacyAgent.a
     }
 ```
 
-- [ ] **Step 3: Run build to verify types**
+- [x] **Step 3: Run build to verify types**
 
 Run: `npm run build`
 Expected: Exits with code 0.
 
-- [ ] **Step 4: Commit changes**
+- [x] **Step 4: Commit changes**
 
 ```bash
 git add src/core/agents.ts src/core/config.ts
@@ -84,7 +84,7 @@ git commit -m "feat(antigravity): align agentsDir to .agents/agents with config 
 - Consumes: `projectDir`, `agent` from `upgrade.ts`
 - Produces: Automatic filesystem migration from `.agents/subagents` to `.agents/agents` during `ai-factory upgrade`
 
-- [ ] **Step 1: Add directory migration logic in `src/cli/commands/upgrade.ts`**
+- [x] **Step 1: Add directory migration logic in `src/cli/commands/upgrade.ts`**
 
 In `upgradeAgent()`, before or during updating subagents:
 ```typescript
@@ -111,12 +111,12 @@ In `upgradeAgent()`, before or during updating subagents:
       }
 ```
 
-- [ ] **Step 2: Run build to verify compilation**
+- [x] **Step 2: Run build to verify compilation**
 
 Run: `npm run build`
 Expected: Exits with code 0.
 
-- [ ] **Step 3: Commit changes**
+- [x] **Step 3: Commit changes**
 
 ```bash
 git add src/cli/commands/upgrade.ts
@@ -135,7 +135,7 @@ git commit -m "feat(upgrade): add filesystem migration from .agents/subagents to
 - Consumes: Antigravity 2.0 subagent schema (`mainAgent`, `permissionMode`, `commandExecutionPolicy`, `tools`, `skills`)
 - Produces: Fully autonomous coordinator agent definitions supporting CLI invocation (`agy --agent implement-coordinator`) and worktree-isolated parallel execution (`Workspace: "branch"`)
 
-- [ ] **Step 1: Update `implement-coordinator.md` frontmatter and instructions**
+- [x] **Step 1: Update `implement-coordinator.md` frontmatter and instructions**
 
 1. Set frontmatter:
 ```yaml
@@ -173,7 +173,7 @@ skills:
 - Use specific sidecar names (`review-sidecar`, `security-sidecar`, `best-practices-sidecar`, `rules-sidecar`, `commit-preparer`, `docs-auditor`).
 - Emphasize passing git diff excerpts directly into sidecar prompts, as sidecars are read-only.
 
-- [ ] **Step 2: Update `plan-coordinator.md` frontmatter and instructions**
+- [x] **Step 2: Update `plan-coordinator.md` frontmatter and instructions**
 
 1. Set frontmatter:
 ```yaml
@@ -201,7 +201,7 @@ skills:
 ```
 2. In dispatch instructions, replace `TypeName: "self"` with `TypeName: "plan-polisher"`.
 
-- [ ] **Step 3: Commit changes**
+- [x] **Step 3: Commit changes**
 
 ```bash
 git add subagents/antigravity/agents/implement-coordinator.md subagents/antigravity/agents/plan-coordinator.md
@@ -220,7 +220,7 @@ git commit -m "feat(antigravity): add autonomy flags and correct subagent dispat
 - Consumes: `AgentTransformer` from `src/core/transformer.js`
 - Produces: Modernized rules templates, `getInvocationHint()`, legacy cleanup of `.agents/subagents/`
 
-- [ ] **Step 1: Refactor `src/core/transformers/antigravity.ts`**
+- [x] **Step 1: Refactor `src/core/transformers/antigravity.ts`**
 
 1. In `aif-guardrails.md`: Replace hardcoded Ukrainian with neutral language preference:
 ```markdown
@@ -244,12 +244,12 @@ git commit -m "feat(antigravity): add autonomy flags and correct subagent dispat
 5. In `getWelcomeMessage()`:
 - Update item 3 to `'3. Agents installed in .agents/agents/ (parallel workers and sidecars)'`.
 
-- [ ] **Step 2: Run build to verify compilation**
+- [x] **Step 2: Run build to verify compilation**
 
 Run: `npm run build`
 Expected: Exits with code 0.
 
-- [ ] **Step 3: Commit changes**
+- [x] **Step 3: Commit changes**
 
 ```bash
 git add src/core/transformers/antigravity.ts
@@ -268,7 +268,7 @@ git commit -m "refactor(antigravity): modernize transformer rules, add invocatio
 - Consumes: Python regex for protected configuration paths
 - Produces: Protected path matching for `\.agents`
 
-- [ ] **Step 1: Add `\.agents` to `security-scan.py`**
+- [x] **Step 1: Add `\.agents` to `security-scan.py`**
 
 In `skills/aif-skill-generator/scripts/security-scan.py`:
 Change:
@@ -284,12 +284,12 @@ PROTECTED_CONFIG_RE = re.compile(
 )
 ```
 
-- [ ] **Step 2: Run test on security-scan.py**
+- [x] **Step 2: Run test on security-scan.py**
 
 Run: `python skills/aif-skill-generator/scripts/security-scan.py --help`
 Expected: Exits with code 0.
 
-- [ ] **Step 3: Commit changes**
+- [x] **Step 3: Commit changes**
 
 ```bash
 git add skills/aif-skill-generator/scripts/security-scan.py
@@ -309,7 +309,7 @@ git commit -m "fix(security-scan): add .agents to protected config paths"
 - Consumes: Compiled CLI in `dist/`
 - Produces: End-to-end verification of `.agents/agents`, rules, MCP, and migration
 
-- [ ] **Step 1: Update `scripts/test-antigravity-e2e.mjs`**
+- [x] **Step 1: Update `scripts/test-antigravity-e2e.mjs`**
 
 1. Replace all occurrences of `'subagents'` path resolution with `'agents'`.
 2. Update assertions:
@@ -318,12 +318,12 @@ assert.strictEqual(agAgent.agentsDir, '.agents/agents');
 ```
 3. Add a test case verifying migration from `.agents/subagents` to `.agents/agents` on upgrade.
 
-- [ ] **Step 2: Update `scripts/test-init.sh`**
+- [x] **Step 2: Update `scripts/test-init.sh`**
 
 Replace `assert_exists "$AG_PROJECT_DIR/.agents/subagents/implement-coordinator.md"` with:
 `assert_exists "$AG_PROJECT_DIR/.agents/agents/implement-coordinator.md"`
 
-- [ ] **Step 3: Build and run E2E test**
+- [x] **Step 3: Build and run E2E test**
 
 Run:
 ```bash
@@ -332,7 +332,7 @@ node scripts/test-antigravity-e2e.mjs
 ```
 Expected: All tests PASS.
 
-- [ ] **Step 4: Commit changes**
+- [x] **Step 4: Commit changes**
 
 ```bash
 git add scripts/test-antigravity-e2e.mjs scripts/test-init.sh
@@ -353,15 +353,15 @@ git commit -m "test(antigravity): update e2e and init tests for .agents/agents d
 - Consumes: Updated project structure
 - Produces: Synchronized documentation reflecting Antigravity 2.0 `.agents/agents`
 
-- [ ] **Step 1: Update `docs/subagents.md`**
+- [x] **Step 1: Update `docs/subagents.md`**
 
 Update all path references to `.agents/agents/`, document `mainAgent: true`, `permissionMode: acceptEdits`, and `Workspace: "branch"`.
 
-- [ ] **Step 2: Update `docs/getting-started.md` and `README.md`**
+- [x] **Step 2: Update `docs/getting-started.md` and `README.md`**
 
 Update tables and descriptions to reflect `.agents/agents/` and Antigravity 2.0 CLI hints.
 
-- [ ] **Step 3: Commit changes**
+- [x] **Step 3: Commit changes**
 
 ```bash
 git add docs/subagents.md docs/getting-started.md README.md docs/upstream-sync.md

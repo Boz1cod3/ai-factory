@@ -69,15 +69,15 @@ Antigravity 2.0 receives native markdown agent files in `.agents/agents/` with Y
 | Agent | Purpose | Model | Autonomy & Frontmatter | Tools |
 |---|---|---|---|---|
 | `plan-coordinator` | own parent planning session and coordinate plan polish passes | `pro` | `mainAgent: true, subagent: true, permissionMode: acceptEdits, commandExecutionPolicy: auto` | `invoke_subagent, send_message, manage_subagents, view_file, grep_search, find_by_name, list_dir` |
-| `plan-polisher` | explore codebase, refine plan, and critique tasks | `flash` | `subagent: true` | `view_file, grep_search, find_by_name, read_url_content, write_to_file, replace_file_content, send_message` |
+| `plan-polisher` | explore codebase, refine plan, and critique tasks | `inherit` | `subagent: true` | `view_file, write_to_file, replace_file_content, grep_search, find_by_name, list_dir, run_command, send_message` |
 | `implement-coordinator` | orchestrate parallel task execution, worker delegation, and sidecars | `pro` | `mainAgent: true, subagent: true, permissionMode: acceptEdits, commandExecutionPolicy: auto` | `invoke_subagent, send_message, manage_subagents, view_file, write_to_file, replace_file_content, grep_search, find_by_name, list_dir, run_command` |
-| `implement-worker` | execute bounded implementation task in isolated workspace (`Workspace: "branch"`) | `inherit` | `subagent: true` | `view_file, grep_search, find_by_name, write_to_file, replace_file_content, run_command, send_message` |
-| `best-practices-sidecar` | read-only maintainability and architecture audit | `flash` | `subagent: true` | `view_file, grep_search, find_by_name, send_message` |
-| `commit-preparer` | read-only inspection of git diff and atomic commit messages | `flash` | `subagent: true` | `view_file, grep_search, find_by_name, run_command, send_message` |
-| `docs-auditor` | read-only documentation drift audit | `flash` | `subagent: true` | `view_file, grep_search, find_by_name, send_message` |
-| `review-sidecar` | read-only correctness and regression review | `flash` | `subagent: true` | `view_file, grep_search, find_by_name, send_message` |
-| `rules-sidecar` | read-only project rules compliance audit | `flash` | `subagent: true` | `view_file, grep_search, find_by_name, send_message` |
-| `security-sidecar` | read-only security and secret leak review | `flash` | `subagent: true` | `view_file, grep_search, find_by_name, send_message` |
+| `implement-worker` | execute bounded implementation task in isolated workspace (`Workspace: "branch"`) | `inherit` | `subagent: true` | `view_file, write_to_file, replace_file_content, grep_search, find_by_name, list_dir, run_command, send_message` |
+| `best-practices-sidecar` | read-only maintainability and architecture audit | `flash` | `subagent: true` | `view_file, grep_search, find_by_name, list_dir, send_message` |
+| `commit-preparer` | read-only inspection of git diff and atomic commit messages | `flash` | `subagent: true` | `view_file, grep_search, find_by_name, list_dir, run_command, send_message` |
+| `docs-auditor` | read-only documentation drift audit | `flash` | `subagent: true` | `view_file, grep_search, find_by_name, list_dir, send_message` |
+| `review-sidecar` | read-only correctness and regression review | `flash` | `subagent: true` | `view_file, grep_search, find_by_name, list_dir, send_message` |
+| `rules-sidecar` | read-only project rules compliance audit | `flash` | `subagent: true` | `view_file, grep_search, find_by_name, list_dir, send_message` |
+| `security-sidecar` | read-only security and secret leak review | `flash` | `subagent: true` | `view_file, grep_search, find_by_name, list_dir, send_message` |
 
 ### Antigravity 2.0 CLI Invocation
 Coordinators can be invoked directly from the terminal with native CLI flags:

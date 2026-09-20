@@ -41,10 +41,11 @@ trigger: always_on
 - Use \`/aif-warmup\` to load project context at session start or before a fork
 - Use \`/aif-plan\` for new features — creates branch, plan, and tasks
 - Use \`/aif-fix\` for bug fixes — analyzes, fixes, suggests tests
-- Use \`/aif-commit\` for commits — follows conventional commits
 - Use \`/aif-implement\` to execute plans step by step
+- Use \`/aif-verify\` to verify implementation against plan
 - Use \`/aif-rules-check\` for a standalone project rules gate
 - Use \`/aif-review\` before merging — checks code quality
+- Use \`/aif-commit\` for commits — follows conventional commits
 
 ## Safety
 
@@ -69,6 +70,7 @@ Modular Agent Skills with multi-file support and metadata:
 - \`aif-plan/\` — Plan and develop new features
 - \`aif-fix/\` — Fix bugs with structured approach
 - \`aif-implement/\` — Execute plans step by step
+- \`aif-verify/\` — Verify implementation against plan
 - \`aif-commit/\` — Create conventional commits
 - \`aif-rules-check/\` — Run a standalone rules compliance gate
 - \`aif-warmup/\` — Load startup context for a session or fork

@@ -1044,62 +1044,68 @@ import { pathToFileURL } from 'node:url';
 
 const { resolveNpmCommand } = await import(pathToFileURL(path.join(process.env.ROOT_DIR, 'dist/core/extensions.js')).href);
 
-const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'aif-npm-resolve-'));
-const fakeExecDir = path.join(tempRoot, 'current-node');
-fs.mkdirSync(fakeExecDir, { recursive: true });
-const fakeExecPath = path.join(fakeExecDir, 'node.exe');
-fs.writeFileSync(fakeExecPath, '');
+const tempRoot = fs.mkdtempSync(path.join(process.cwd(), 'temp-npm-resolve-'));
+const noSafeRoot = fs.mkdtempSync(path.join(process.cwd(), 'temp-npm-missing-'));
 
-const npmRoot = path.join(tempRoot, 'npm-root');
-const npmCliPath = path.join(npmRoot, 'node_modules', 'npm', 'bin', 'npm-cli.js');
-const bundledNodePath = path.join(npmRoot, 'node.exe');
-fs.mkdirSync(path.dirname(npmCliPath), { recursive: true });
-fs.writeFileSync(path.join(npmRoot, 'npm.cmd'), '@ECHO off\r\n');
-fs.writeFileSync(npmCliPath, '#!/usr/bin/env node\n');
-fs.writeFileSync(bundledNodePath, '');
+try {
+  const fakeExecDir = path.join(tempRoot, 'current-node');
+  fs.mkdirSync(fakeExecDir, { recursive: true });
+  const fakeExecPath = path.join(fakeExecDir, 'node.exe');
+  fs.writeFileSync(fakeExecPath, '');
 
-const resolved = await resolveNpmCommand({
-  platform: 'win32',
-  execPath: fakeExecPath,
-  pathEnv: `${npmRoot};${process.env.PATH}`,
-});
+  const npmRoot = path.join(tempRoot, 'npm-root');
+  const npmCliPath = path.join(npmRoot, 'node_modules', 'npm', 'bin', 'npm-cli.js');
+  const bundledNodePath = path.join(npmRoot, 'node.exe');
+  fs.mkdirSync(path.dirname(npmCliPath), { recursive: true });
+  fs.writeFileSync(path.join(npmRoot, 'npm.cmd'), '@ECHO off\r\n');
+  fs.writeFileSync(npmCliPath, '#!/usr/bin/env node\n');
+  fs.writeFileSync(bundledNodePath, '');
 
-assert.equal(resolved.command, bundledNodePath, 'Windows npm resolution must prefer node.exe adjacent to npm.cmd');
-assert.deepEqual(resolved.argsPrefix, [npmCliPath], 'Windows npm resolution must invoke npm-cli.js directly');
-
-const resolvedWithCustomDelimiter = await resolveNpmCommand({
-  platform: 'win32',
-  execPath: fakeExecPath,
-  pathEnv: `${path.relative(process.cwd(), npmRoot)}:${path.relative(process.cwd(), tempRoot)}`,
-  pathDelimiter: ':',
-});
-
-assert.equal(
-  resolvedWithCustomDelimiter.command,
-  path.join(path.relative(process.cwd(), npmRoot), 'node.exe'),
-  'Windows npm resolution must honor injected path delimiters instead of host defaults',
-);
-assert.deepEqual(
-  resolvedWithCustomDelimiter.argsPrefix,
-  [path.join(path.relative(process.cwd(), npmRoot), 'node_modules', 'npm', 'bin', 'npm-cli.js')],
-  'Windows npm resolution must honor injected delimiters when locating npm-cli.js',
-);
-
-const noSafeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'aif-npm-missing-'));
-const missingExecDir = path.join(noSafeRoot, 'isolated-node');
-fs.mkdirSync(missingExecDir, { recursive: true });
-const missingExecPath = path.join(missingExecDir, 'node.exe');
-fs.writeFileSync(missingExecPath, '');
-
-await assert.rejects(
-  () => resolveNpmCommand({
+  const resolved = await resolveNpmCommand({
     platform: 'win32',
-    execPath: missingExecPath,
-    pathEnv: noSafeRoot,
-  }),
-  /safe Windows npm/i,
-  'Windows npm resolution must fail explicitly when no safe npm-cli.js path is available',
-);
+    execPath: fakeExecPath,
+    pathEnv: `${npmRoot};${process.env.PATH}`,
+  });
+
+  assert.equal(resolved.command, bundledNodePath, 'Windows npm resolution must prefer node.exe adjacent to npm.cmd');
+  assert.deepEqual(resolved.argsPrefix, [npmCliPath], 'Windows npm resolution must invoke npm-cli.js directly');
+
+  const resolvedWithCustomDelimiter = await resolveNpmCommand({
+    platform: 'win32',
+    execPath: fakeExecPath,
+    pathEnv: `${path.relative(process.cwd(), npmRoot)}:${path.relative(process.cwd(), tempRoot)}`,
+    pathDelimiter: ':',
+  });
+
+  assert.equal(
+    resolvedWithCustomDelimiter.command,
+    path.join(path.relative(process.cwd(), npmRoot), 'node.exe'),
+    'Windows npm resolution must honor injected path delimiters instead of host defaults',
+  );
+  assert.deepEqual(
+    resolvedWithCustomDelimiter.argsPrefix,
+    [path.join(path.relative(process.cwd(), npmRoot), 'node_modules', 'npm', 'bin', 'npm-cli.js')],
+    'Windows npm resolution must honor injected delimiters when locating npm-cli.js',
+  );
+
+  const missingExecDir = path.join(noSafeRoot, 'isolated-node');
+  fs.mkdirSync(missingExecDir, { recursive: true });
+  const missingExecPath = path.join(missingExecDir, 'node.exe');
+  fs.writeFileSync(missingExecPath, '');
+
+  await assert.rejects(
+    () => resolveNpmCommand({
+      platform: 'win32',
+      execPath: missingExecPath,
+      pathEnv: noSafeRoot,
+    }),
+    /safe Windows npm/i,
+    'Windows npm resolution must fail explicitly when no safe npm-cli.js path is available',
+  );
+} finally {
+  fs.rmSync(tempRoot, { recursive: true, force: true });
+  fs.rmSync(noSafeRoot, { recursive: true, force: true });
+}
 EOF
 
 echo "windows npm resolution smoke tests passed"

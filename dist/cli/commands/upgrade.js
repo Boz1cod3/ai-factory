@@ -4,7 +4,7 @@ import path from 'path';
 import { loadConfig, saveConfig, getCurrentVersion } from '../../core/config.js';
 import { buildManagedConfigFilesState, buildManagedSkillsState, buildManagedSubagentsState, installConfigFiles, installSkills, installSubagents, getAvailableSkills, partitionSkills, } from '../../core/installer.js';
 import { getAgentConfig, hydrateProjectAgentRegistry } from '../../core/agents.js';
-import { fileExists, removeDirectory, removeFile, listDirectories, copyFile, ensureDir } from '../../utils/fs.js';
+import { fileExists, removeDirectory, removeFile, listDirectories, copyFile, ensureDir, listFilesRecursive } from '../../utils/fs.js';
 import { resolveSkillTargets } from '../../core/skill-targets.js';
 import { prepareSkillTargets, recoverSkillMigration, withSkillProjectLock } from '../../core/skills-migration.js';
 import { collectReplacedSkills, composeInstalledExtensionSkills } from '../../core/extension-ops.js';
@@ -226,14 +226,13 @@ async function upgradeLocked() {
                 if (!await fileExists(newAgentsDir)) {
                     await ensureDir(newAgentsDir);
                 }
-                const files = await fs.readdir(oldSubagentsDir);
+                const files = await listFilesRecursive(oldSubagentsDir);
                 for (const file of files) {
-                    const oldPath = path.join(oldSubagentsDir, file);
-                    const newPath = path.join(newAgentsDir, file);
+                    const relPath = path.relative(oldSubagentsDir, file);
+                    const newPath = path.join(newAgentsDir, relPath);
                     if (!await fileExists(newPath)) {
-                        await copyFile(oldPath, newPath);
+                        await copyFile(file, newPath);
                     }
-                    await removeFile(oldPath);
                 }
                 await removeDirectory(oldSubagentsDir);
                 agent.agentsDir = '.agents/agents';
