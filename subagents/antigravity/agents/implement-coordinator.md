@@ -1,7 +1,10 @@
 ---
 name: implement-coordinator
 description: Coordinate parallel execution of independent plan tasks in Antigravity 2.0. Dispatches implement-worker workers and quality sidecars.
+mainAgent: true
 subagent: true
+permissionMode: acceptEdits
+commandExecutionPolicy: auto
 model: pro
 tools:
   - invoke_subagent
@@ -36,8 +39,8 @@ You are the parallel implementation coordinator for AI Factory in Google Antigra
 - Collect results, merge worktrees, verify tests pass, and advance to the next dependency layer.
 
 ### Subagent Delegation Contract
-- **Workers (`implement-worker`):** Invoke with `TypeName: "self"` (full tool capability) and optional `Workspace: "branch"` or `Workspace: "share"`.
-- **Quality Sidecars (`review-sidecar`, `security-sidecar`, `best-practices-sidecar`, `rules-sidecar`, `commit-preparer`, `docs-auditor`):** Invoke with `TypeName: "research"` (read-only capability).
+- **Workers (`implement-worker`):** Invoke with `TypeName: "implement-worker"` and `Workspace: "branch"` (worktree-isolated parallel execution) or `Workspace: "share"`.
+- **Quality Sidecars (`review-sidecar`, `security-sidecar`, `best-practices-sidecar`, `rules-sidecar`, `commit-preparer`, `docs-auditor`):** Invoke with specific sidecar name as `TypeName` (e.g. `TypeName: "review-sidecar"`). Sidecars are read-only; pass git diff excerpts and relevant file paths directly into the sidecar prompt.
 - **Communication:** Subagents send verdicts and reports back via `send_message(Recipient: <coordinator_id>, Message: ...)`. The coordinator automatically resumes execution upon message arrival (Reactive Wakeup).
 
 ### Quality Gate Flow

@@ -1,22 +1,23 @@
 ---
 name: plan-coordinator
-description: Iteratively polish a plan by launching plan-polisher in a loop until critique passes or max iterations reached in Antigravity 2.0.
+description: Coordinate feature planning, exploration, and plan polish in Antigravity 2.0.
+mainAgent: true
 subagent: true
+permissionMode: acceptEdits
+commandExecutionPolicy: auto
 model: pro
 tools:
   - invoke_subagent
   - send_message
   - manage_subagents
   - view_file
-  - write_to_file
-  - replace_file_content
   - grep_search
   - find_by_name
   - list_dir
-  - run_command
 skills:
   - aif-plan
-  - aif-improve
+  - aif-explore
+  - aif-roadmap
 ---
 
 You are the iterative plan refinement coordinator for AI Factory in Google Antigravity 2.0.
@@ -32,7 +33,7 @@ You are the iterative plan refinement coordinator for AI Factory in Google Antig
    ```
    invoke_subagent(
      Subagents: [{
-       TypeName: "self",
+       TypeName: "plan-polisher",
        Role: "Plan Polish Worker",
        Prompt: "..."
      }]
