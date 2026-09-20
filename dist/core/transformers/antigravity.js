@@ -28,7 +28,7 @@ trigger: always_on
 ## Language Conventions
 
 - Write implementation plans (\`PLAN.md\`), architectural specifications, code, variables, and code comments in English.
-- Write all user-facing responses, implementation logs, review comments, and task comments in Ukrainian.
+- Follow configured project language preferences for user communication and task logs.
 
 ## Skill Usage
 
@@ -68,18 +68,25 @@ Modular Agent Skills with multi-file support and metadata:
 - \`aif-warmup/\` — Load startup context for a session or fork
 - \`aif-review/\` — Code review checklist
 - \`aif-ci/\` — CI/CD pipeline setup
-- \`best-practices/\` — Code quality standards
-- \`architecture/\` — Architecture decision records
+- \`aif-best-practices/\` — Code quality standards
+- \`aif-architecture/\` — Architecture decision records
+- \`aif-roadmap/\` — Strategic project roadmap
+- \`aif-rules/\` — Project rules and conventions
+- \`aif-loop/\` — Iterative reflex loop
+- \`aif-qa/\` — QA test generation
 
-### Subagents (.agents/subagents/)
+### Agents (.agents/agents/)
 Native autonomous agents for parallel execution and quality sidecars:
 - \`implement-coordinator.md\` — Parallel execution coordinator
 - \`implement-worker.md\` — Bounded implementation worker
+- \`plan-coordinator.md\` — Planning and polish coordinator
+- \`plan-polisher.md\` — Plan refinement worker
 - \`review-sidecar.md\` — Read-only code review auditor
 - \`security-sidecar.md\` — Read-only security auditor
 - \`best-practices-sidecar.md\` — Read-only best practices auditor
-- \`plan-coordinator.md\` — Planning and polish coordinator
-- \`commit-preparer.md\` — Commit inspection sidecar
+- \`rules-sidecar.md\` — Standalone rules compliance auditor
+- \`commit-preparer.md\` — Conventional commit inspection sidecar
+- \`docs-auditor.md\` — Documentation audit sidecar
 
 ### Rules (.agents/rules/)
 Project rules with YAML frontmatter triggers:
@@ -100,6 +107,11 @@ Standard Model Context Protocol configuration with workspace scope.
             if (await fileExists(rulePath)) {
                 await removeFile(rulePath);
             }
+        }
+        // Purge legacy .agents/subagents if present
+        const legacySubagentsDir = path.join(projectDir, '.agents', 'subagents');
+        if (await fileExists(legacySubagentsDir)) {
+            await removeDirectory(legacySubagentsDir);
         }
         // Purge legacy v1 .agent artifacts if present
         const legacyWorkflowsDir = path.join(projectDir, '.agent', 'workflows');
@@ -122,11 +134,14 @@ Standard Model Context Protocol configuration with workspace scope.
         return [
             '1. Open Antigravity 2.0 in this directory',
             '2. Skills installed in .agents/skills/ (standard multi-file SKILL.md format)',
-            '3. Subagents installed in .agents/subagents/ (parallel workers and sidecars)',
+            '3. Agents installed in .agents/agents/ (parallel workers and sidecars)',
             '4. Rules installed in .agents/rules/ (triggered guardrails and conventions)',
             '5. MCP servers configured in .agents/mcp_config.json',
             '6. Run /aif to analyze project and generate project-relevant skills',
         ];
+    }
+    getInvocationHint() {
+        return 'Antigravity: /aif-plan, /aif-commit, agy --agent implement-coordinator';
     }
 }
 //# sourceMappingURL=antigravity.js.map

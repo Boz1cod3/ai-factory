@@ -4,5 +4,6 @@ export declare class AntigravityTransformer implements AgentTransformer {
     postInstall(projectDir: string): Promise<void>;
     cleanup(projectDir: string, skillsDir: string): Promise<void>;
     getWelcomeMessage(): string[];
+    getInvocationHint(): string;
 }
 //# sourceMappingURL=antigravity.d.ts.map

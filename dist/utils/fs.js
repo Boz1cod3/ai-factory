@@ -130,6 +130,7 @@ export async function hashDirectory(dirPath, options) {
 export async function ensureDir(dirPath) {
     await fs.ensureDir(dirPath);
 }
+export const ensureDirectory = ensureDir;
 export async function removeDirectory(dirPath) {
     await fs.remove(dirPath);
 }

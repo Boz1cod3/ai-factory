@@ -19,6 +19,7 @@ export interface ListFilesOptions {
 export declare function listFilesRecursive(dirPath: string, options?: ListFilesOptions): Promise<string[]>;
 export declare function hashDirectory(dirPath: string, options?: ListFilesOptions): Promise<string | null>;
 export declare function ensureDir(dirPath: string): Promise<void>;
+export declare const ensureDirectory: typeof ensureDir;
 export declare function removeDirectory(dirPath: string): Promise<void>;
 export declare function removeFile(filePath: string): Promise<void>;
 //# sourceMappingURL=fs.d.ts.map
