@@ -2,7 +2,7 @@
 name: best-practices-sidecar
 description: Read-only background best-practices sidecar in Antigravity 2.0. Analyzes changed code for concrete maintainability and structure issues.
 subagent: true
-model: flash
+model: inherit
 tools:
   - view_file
   - grep_search

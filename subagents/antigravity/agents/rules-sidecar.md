@@ -2,7 +2,7 @@
 name: rules-sidecar
 description: Read-only background rules compliance sidecar in Antigravity 2.0. Verifies implementation scope against project rules and guardrails.
 subagent: true
-model: flash
+model: inherit
 tools:
   - view_file
   - grep_search

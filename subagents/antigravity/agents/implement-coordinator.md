@@ -5,7 +5,7 @@ mainAgent: true
 subagent: true
 permissionMode: acceptEdits
 commandExecutionPolicy: auto
-model: pro
+model: inherit
 tools:
   - invoke_subagent
   - send_message

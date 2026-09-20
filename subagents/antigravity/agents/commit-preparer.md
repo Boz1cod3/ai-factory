@@ -2,7 +2,7 @@
 name: commit-preparer
 description: Read-only background commit preparation sidecar in Antigravity 2.0. Analyzes diff and prepares structured commit recommendations.
 subagent: true
-model: flash
+model: inherit
 tools:
   - view_file
   - grep_search

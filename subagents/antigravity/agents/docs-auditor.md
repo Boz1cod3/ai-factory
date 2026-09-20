@@ -2,7 +2,7 @@
 name: docs-auditor
 description: Read-only background documentation drift sidecar in Antigravity 2.0. Analyzes changed implementation scope for documentation drift.
 subagent: true
-model: flash
+model: inherit
 tools:
   - view_file
   - grep_search

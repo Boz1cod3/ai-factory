@@ -2,7 +2,7 @@
 name: security-sidecar
 description: Read-only background security audit sidecar in Antigravity 2.0. Analyzes changed code for material security risks, vulnerabilities, and secrets.
 subagent: true
-model: flash
+model: inherit
 tools:
   - view_file
   - grep_search

@@ -2,7 +2,7 @@
 name: review-sidecar
 description: Read-only background code review sidecar in Antigravity 2.0. Analyzes changed code for bug risk, regressions, and performance.
 subagent: true
-model: flash
+model: inherit
 tools:
   - view_file
   - grep_search
