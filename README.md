@@ -147,7 +147,7 @@ npx skills add lee-to/ai-factory --skill '*'
 This fork (`Boz1cod3/ai-factory`) introduces full native integration for **Google Antigravity 2.0** (`agy` / `agy.exe`):
 
 - **Agent Skills Layout**: Deploys skills into `.agents/skills/` following the [Agent Skills standard](https://agentskills.io).
-- **Native Subagent Bundle**: Installs 10 markdown subagents into `.agents/subagents/` with model tiers (`pro`, `flash`), tool declarations, and Reactive Wakeup communication.
+- **Native Subagent Bundle**: Installs 10 markdown agents into `.agents/agents/` with autonomy flags (`mainAgent`, `permissionMode: acceptEdits`, `commandExecutionPolicy: auto`), model tiers (`pro`, `flash`), worktree isolation (`Workspace: "branch"`), and Reactive Wakeup communication.
 - **Automated Rule Triggers**: Generates `.agents/rules/rules.md` (and `.agent/rules.md`) with explicit event hooks (`on_init`, `on_plan`, `on_implement`, `on_review`).
 - **MCP Auto-Configuration**: Automatically generates and maintains `.agents/mcp_config.json` with required development servers.
 - **Dual-Language Conventions**:
