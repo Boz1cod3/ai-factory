@@ -145,7 +145,7 @@ const BUILTIN_AGENT_REGISTRY = {
     },
     [AGENT_IDS.antigravity]: {
         id: AGENT_IDS.antigravity,
-        displayName: 'Antigravity',
+        displayName: 'Antigravity 2.0',
         configDir: '.agents',
         skillsDir: '.agents/skills',
         agentsDir: '.agents/agents',
