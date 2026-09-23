@@ -13,7 +13,7 @@ import {
   partitionSkills,
 } from '../../core/installer.js';
 import { getAgentConfig, hydrateProjectAgentRegistry } from '../../core/agents.js';
-import { fileExists, removeDirectory, removeFile, listDirectories, copyFile, ensureDir, listFilesRecursive } from '../../utils/fs.js';
+import { fileExists, removeDirectory, removeFile, copyFile, ensureDir, listFilesRecursive, readJsonFile } from '../../utils/fs.js';
 import { resolveSkillTargets } from '../../core/skill-targets.js';
 import { prepareSkillTargets, recoverSkillMigration, withSkillProjectLock } from '../../core/skills-migration.js';
 import { collectReplacedSkills, composeInstalledExtensionSkills } from '../../core/extension-ops.js';
@@ -76,6 +76,28 @@ const OLD_WORKFLOW_SKILLS = new Set([
   'verify',
 ]);
 
+const LEGACY_RULE_FILES = new Set([
+  'aif-guardrails.md',
+  'aif-conventions.md',
+]);
+
+const KNOWN_LEGACY_WORKFLOW_FILES = new Set([
+  'aif.md',
+  ...OLD_SKILL_NAMES.map(name => `${name}.md`),
+  ...OLD_AIF_PREFIX_SKILL_NAMES.map(name => `${name}.md`),
+]);
+
+function isLegacyWorkflowFile(fileName: string): boolean {
+  if (!fileName.endsWith('.md')) {
+    return false;
+  }
+  if (KNOWN_LEGACY_WORKFLOW_FILES.has(fileName)) {
+    return true;
+  }
+  const baseName = fileName.slice(0, -3);
+  return baseName === 'aif' || baseName.startsWith('aif-') || baseName.startsWith('ai-factory-');
+}
+
 async function removeWorkflowFile(projectDir: string, configDir: string, skillName: string): Promise<boolean> {
   const flatFile = path.join(projectDir, configDir, 'workflows', `${skillName}.md`);
   if (await fileExists(flatFile)) {
@@ -128,6 +150,16 @@ async function upgradeLocked(): Promise<void> {
   const projectDir = process.cwd();
 
   console.log(chalk.bold.blue('\n🏭 AI Factory - Upgrade to v2\n'));
+
+  const rawConfig = await readJsonFile<{
+    agents?: Array<{ id: string; agentsDir?: string; subagentsDir?: string }>;
+  }>(path.join(projectDir, '.ai-factory.json'));
+
+  const agentsWithLegacySubagents = new Set(
+    rawConfig?.agents
+      ?.filter(agent => agent.agentsDir === '.agents/subagents' || agent.subagentsDir === '.agents/subagents')
+      .map(agent => agent.id) ?? [],
+  );
 
   let config = await loadConfig(projectDir);
 
@@ -238,19 +270,39 @@ async function upgradeLocked(): Promise<void> {
     if (isAntigravity) {
       const legacyWorkflowsDir = path.join(projectDir, '.agent', 'workflows');
       if (await fileExists(legacyWorkflowsDir)) {
-        await removeDirectory(legacyWorkflowsDir);
-        console.log(chalk.yellow(`  [antigravity] Removed legacy Antigravity 1.0 workflows: .agent/workflows/`));
-        removedCount++;
+        const entries = await fs.readdir(legacyWorkflowsDir, { withFileTypes: true });
+        for (const entry of entries) {
+          if (entry.isFile() && isLegacyWorkflowFile(entry.name)) {
+            await removeFile(path.join(legacyWorkflowsDir, entry.name));
+            console.log(chalk.yellow(`  [antigravity] Removed legacy Antigravity 1.0 workflow: .agent/workflows/${entry.name}`));
+            removedCount++;
+          }
+        }
+        const remainingWorkflows = await fs.readdir(legacyWorkflowsDir);
+        if (remainingWorkflows.length === 0) {
+          await removeDirectory(legacyWorkflowsDir);
+          console.log(chalk.yellow(`  [antigravity] Removed empty legacy directory: .agent/workflows/`));
+        }
       }
       const legacyRulesDir = path.join(projectDir, '.agent', 'rules');
       if (await fileExists(legacyRulesDir)) {
-        await removeDirectory(legacyRulesDir);
-        console.log(chalk.yellow(`  [antigravity] Removed legacy Antigravity 1.0 rules: .agent/rules/`));
-        removedCount++;
+        const entries = await fs.readdir(legacyRulesDir, { withFileTypes: true });
+        for (const entry of entries) {
+          if (entry.isFile() && LEGACY_RULE_FILES.has(entry.name)) {
+            await removeFile(path.join(legacyRulesDir, entry.name));
+            console.log(chalk.yellow(`  [antigravity] Removed legacy Antigravity 1.0 rule: .agent/rules/${entry.name}`));
+            removedCount++;
+          }
+        }
+        const remainingRules = await fs.readdir(legacyRulesDir);
+        if (remainingRules.length === 0) {
+          await removeDirectory(legacyRulesDir);
+          console.log(chalk.yellow(`  [antigravity] Removed empty legacy directory: .agent/rules/`));
+        }
       }
       const legacyAgentDir = path.join(projectDir, '.agent');
       if (await fileExists(legacyAgentDir)) {
-        const remaining = await listDirectories(legacyAgentDir);
+        const remaining = await fs.readdir(legacyAgentDir);
         if (remaining.length === 0) {
           await removeDirectory(legacyAgentDir);
           console.log(chalk.yellow(`  [antigravity] Removed empty legacy directory: .agent/`));
@@ -259,14 +311,15 @@ async function upgradeLocked(): Promise<void> {
       if (agent.skillsDir === '.agent/skills') {
         agent.skillsDir = agentConfig.skillsDir;
       }
+      const oldSubagentsDir = path.join(projectDir, '.agents', 'subagents');
+      const hadSubagentsDir = agentsWithLegacySubagents.has(agent.id);
       if (!agent.agentsDir || agent.agentsDir === '.agents/subagents') {
         agent.agentsDir = agentConfig.agentsDir;
       }
 
-      // Migrate legacy .agents/subagents to .agents/agents for Antigravity
-      const oldSubagentsDir = path.join(projectDir, '.agents', 'subagents');
+      // Migrate legacy .agents/subagents to .agents/agents for Antigravity only if configured
       const newAgentsDir = path.join(projectDir, '.agents', 'agents');
-      if (await fileExists(oldSubagentsDir)) {
+      if (hadSubagentsDir && await fileExists(oldSubagentsDir)) {
         if (!await fileExists(newAgentsDir)) {
           await ensureDir(newAgentsDir);
         }

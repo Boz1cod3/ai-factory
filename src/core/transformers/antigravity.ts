@@ -1,7 +1,134 @@
 import type { AgentTransformer, TransformResult } from '../transformer.js';
 
-import { writeTextFile, fileExists, removeFile, removeDirectory, listDirectories } from '../../utils/fs.js';
+import {
+  writeTextFile,
+  fileExists,
+  removeFile,
+  removeDirectory,
+  copyFile,
+  listFilesRecursive,
+  readFileBuffer,
+} from '../../utils/fs.js';
+import fs from 'fs-extra';
 import path from 'path';
+
+const KNOWN_LEGACY_RULE_FILES = new Set([
+  'aif-guardrails.md',
+  'aif-conventions.md',
+]);
+
+const KNOWN_LEGACY_WORKFLOW_FILES = new Set([
+  // AI Factory v2 prefixed names
+  'aif.md',
+  'aif-architecture.md',
+  'aif-archive.md',
+  'aif-best-practices.md',
+  'aif-build-automation.md',
+  'aif-ci.md',
+  'aif-commit.md',
+  'aif-distillation.md',
+  'aif-dockerize.md',
+  'aif-docs.md',
+  'aif-evolve.md',
+  'aif-explore.md',
+  'aif-fix.md',
+  'aif-grounded.md',
+  'aif-implement.md',
+  'aif-improve.md',
+  'aif-loop.md',
+  'aif-plan.md',
+  'aif-qa.md',
+  'aif-qa-check.md',
+  'aif-reference.md',
+  'aif-review.md',
+  'aif-roadmap.md',
+  'aif-rules.md',
+  'aif-rules-check.md',
+  'aif-security-checklist.md',
+  'aif-skill-generator.md',
+  'aif-transfer.md',
+  'aif-verify.md',
+  'aif-warmup.md',
+  // AI Factory v1 bare names
+  'architecture.md',
+  'archive.md',
+  'best-practices.md',
+  'build-automation.md',
+  'ci.md',
+  'commit.md',
+  'distillation.md',
+  'dockerize.md',
+  'docs.md',
+  'evolve.md',
+  'explore.md',
+  'feature.md',
+  'fix.md',
+  'grounded.md',
+  'implement.md',
+  'improve.md',
+  'loop.md',
+  'plan.md',
+  'qa.md',
+  'qa-check.md',
+  'reference.md',
+  'review.md',
+  'roadmap.md',
+  'rules.md',
+  'rules-check.md',
+  'security-checklist.md',
+  'skill-generator.md',
+  'task.md',
+  'transfer.md',
+  'verify.md',
+  'warmup.md',
+]);
+
+const KNOWN_LEGACY_WORKFLOW_REFERENCES = new Set([
+  'config-template.yaml',
+  'update-config.mjs',
+  'RULES-CHECK-CONTRACT.md',
+  'README.md',
+]);
+
+const KNOWN_AGENT_FILES = new Set([
+  'best-practices-sidecar.md',
+  'commit-preparer.md',
+  'docs-auditor.md',
+  'implement-coordinator.md',
+  'implement-worker.md',
+  'plan-coordinator.md',
+  'plan-polisher.md',
+  'review-sidecar.md',
+  'rules-sidecar.md',
+  'security-sidecar.md',
+]);
+
+async function removeEmptyDirBottomUp(dirPath: string): Promise<boolean> {
+  if (!await fileExists(dirPath)) {
+    return true;
+  }
+  let entries: fs.Dirent[];
+  try {
+    entries = await fs.readdir(dirPath, { withFileTypes: true });
+  } catch {
+    return false;
+  }
+  for (const entry of entries) {
+    if (entry.isDirectory()) {
+      await removeEmptyDirBottomUp(path.join(dirPath, entry.name));
+    }
+  }
+  try {
+    const remaining = await fs.readdir(dirPath);
+    if (remaining.length === 0) {
+      await removeDirectory(dirPath);
+      return true;
+    }
+  } catch {
+    return false;
+  }
+  return false;
+}
 
 export class AntigravityTransformer implements AgentTransformer {
   transform(skillName: string, content: string): TransformResult {
@@ -110,36 +237,81 @@ Standard Model Context Protocol configuration with workspace scope.
   }
 
   async cleanup(projectDir: string, skillsDir: string): Promise<void> {
-    const configDir = path.dirname(skillsDir);
+    return this.cleanupTargetSkills(projectDir, skillsDir);
+  }
+
+  async cleanupTargetSkills(projectDir: string, skillsDir?: string): Promise<void> {
+    const configDir = skillsDir ? path.dirname(skillsDir) : '.agents';
     const modernRulesDir = path.join(projectDir, configDir, 'rules');
-    for (const ruleFile of ['aif-guardrails.md', 'aif-conventions.md']) {
+    for (const ruleFile of KNOWN_LEGACY_RULE_FILES) {
       const rulePath = path.join(modernRulesDir, ruleFile);
       if (await fileExists(rulePath)) {
         await removeFile(rulePath);
       }
     }
 
-    // Purge legacy .agents/subagents if present
+    // Ownership-aware cleanup of legacy .agents/subagents
     const legacySubagentsDir = path.join(projectDir, '.agents', 'subagents');
+    const targetAgentsDir = path.join(projectDir, '.agents', 'agents');
     if (await fileExists(legacySubagentsDir)) {
-      await removeDirectory(legacySubagentsDir);
+      const files = await listFilesRecursive(legacySubagentsDir);
+      for (const file of files) {
+        const relPath = path.relative(legacySubagentsDir, file).replaceAll('\\', '/');
+        const destPath = path.join(targetAgentsDir, relPath);
+        const collision = await fileExists(destPath);
+        if (!collision) {
+          await copyFile(file, destPath);
+          await removeFile(file);
+        } else if (KNOWN_AGENT_FILES.has(relPath)) {
+          const [srcBuf, destBuf] = await Promise.all([
+            readFileBuffer(file),
+            readFileBuffer(destPath),
+          ]);
+          if (srcBuf && destBuf && srcBuf.equals(destBuf)) {
+            await removeFile(file);
+          }
+        }
+      }
+      await removeEmptyDirBottomUp(legacySubagentsDir);
     }
 
-    // Purge legacy v1 .agent artifacts if present
+    // Ownership-aware cleanup of legacy v1 .agent workflows
     const legacyWorkflowsDir = path.join(projectDir, '.agent', 'workflows');
     if (await fileExists(legacyWorkflowsDir)) {
-      await removeDirectory(legacyWorkflowsDir);
+      for (const workflowFile of KNOWN_LEGACY_WORKFLOW_FILES) {
+        const workflowPath = path.join(legacyWorkflowsDir, workflowFile);
+        if (await fileExists(workflowPath)) {
+          await removeFile(workflowPath);
+        }
+      }
+      const legacyReferencesDir = path.join(legacyWorkflowsDir, 'references');
+      if (await fileExists(legacyReferencesDir)) {
+        for (const refFile of KNOWN_LEGACY_WORKFLOW_REFERENCES) {
+          const refPath = path.join(legacyReferencesDir, refFile);
+          if (await fileExists(refPath)) {
+            await removeFile(refPath);
+          }
+        }
+      }
+      await removeEmptyDirBottomUp(legacyWorkflowsDir);
     }
+
+    // Ownership-aware cleanup of legacy v1 .agent rules
     const legacyRulesDir = path.join(projectDir, '.agent', 'rules');
     if (await fileExists(legacyRulesDir)) {
-      await removeDirectory(legacyRulesDir);
+      for (const ruleFile of KNOWN_LEGACY_RULE_FILES) {
+        const rulePath = path.join(legacyRulesDir, ruleFile);
+        if (await fileExists(rulePath)) {
+          await removeFile(rulePath);
+        }
+      }
+      await removeEmptyDirBottomUp(legacyRulesDir);
     }
+
+    // Only remove .agent/ if it has become completely empty
     const legacyAgentDir = path.join(projectDir, '.agent');
     if (await fileExists(legacyAgentDir)) {
-      const remaining = await listDirectories(legacyAgentDir);
-      if (remaining.length === 0) {
-        await removeDirectory(legacyAgentDir);
-      }
+      await removeEmptyDirBottomUp(legacyAgentDir);
     }
   }
 
