@@ -1,16 +1,17 @@
 import type { AgentTransformer, TransformResult } from '../transformer.js';
+import chalk from 'chalk';
+import path from 'path';
 
 import {
   writeTextFile,
+  readTextFile,
   fileExists,
   removeFile,
-  removeDirectory,
   copyFile,
   listFilesRecursive,
   readFileBuffer,
+  removeEmptyDirBottomUp,
 } from '../../utils/fs.js';
-import fs from 'fs-extra';
-import path from 'path';
 
 const KNOWN_LEGACY_RULE_FILES = new Set([
   'aif-guardrails.md',
@@ -90,44 +91,72 @@ const KNOWN_LEGACY_WORKFLOW_REFERENCES = new Set([
   'README.md',
 ]);
 
-const KNOWN_AGENT_FILES = new Set([
-  'best-practices-sidecar.md',
-  'commit-preparer.md',
-  'docs-auditor.md',
-  'implement-coordinator.md',
-  'implement-worker.md',
-  'plan-coordinator.md',
-  'plan-polisher.md',
-  'review-sidecar.md',
-  'rules-sidecar.md',
-  'security-sidecar.md',
-]);
-
-async function removeEmptyDirBottomUp(dirPath: string): Promise<boolean> {
-  if (!await fileExists(dirPath)) {
+export function isAiFactoryWorkflowArtifact(content: string, fileName?: string): boolean {
+  const lower = content.toLowerCase();
+  if (
+    lower.includes('ai-factory') ||
+    lower.includes('.ai-factory') ||
+    lower.includes('/aif-') ||
+    lower.includes('aif:') ||
+    lower.includes('legacy workflow')
+  ) {
     return true;
   }
-  let entries: fs.Dirent[];
-  try {
-    entries = await fs.readdir(dirPath, { withFileTypes: true });
-  } catch {
-    return false;
-  }
-  for (const entry of entries) {
-    if (entry.isDirectory()) {
-      await removeEmptyDirBottomUp(path.join(dirPath, entry.name));
-    }
-  }
-  try {
-    const remaining = await fs.readdir(dirPath);
-    if (remaining.length === 0) {
-      await removeDirectory(dirPath);
+  if (fileName) {
+    const rawSkill = fileName.replace(/\.md$/, '');
+    if (
+      lower.includes(`name: ${rawSkill}`) ||
+      lower.includes(`name: aif-${rawSkill}`) ||
+      lower.includes(`name: ai-factory-${rawSkill}`) ||
+      lower.includes(`name: "${rawSkill}"`) ||
+      lower.includes(`name: '${rawSkill}'`)
+    ) {
       return true;
     }
-  } catch {
-    return false;
   }
   return false;
+}
+
+const LEGACY_GUARDRAILS_CONTENT = `---
+trigger: always_on
+---
+
+# AI Factory Guardrails
+
+## Project Conventions
+
+- Follow existing code style and patterns in the project
+- Use conventional commits format for all commit messages
+- Always check for existing implementations before creating new ones
+- Prefer editing existing files over creating new ones
+- Run tests after making changes when test infrastructure exists
+
+## Language Conventions
+
+- Write implementation plans (\`PLAN.md\`), architectural specifications, code, variables, and code comments in English.
+- Follow configured project language preferences for user communication and task logs.
+
+## Skill Usage
+
+- Use \`/aif-explore\` to think through ideas before planning — no implementation, just exploration
+- Use \`/aif-warmup\` to load project context at session start or before a fork
+- Use \`/aif-plan\` for new features — creates branch, plan, and tasks
+- Use \`/aif-fix\` for bug fixes — analyzes, fixes, suggests tests
+- Use \`/aif-implement\` to execute plans step by step
+- Use \`/aif-verify\` to verify implementation against plan
+- Use \`/aif-rules-check\` for a standalone project rules gate
+- Use \`/aif-review\` before merging — checks code quality
+- Use \`/aif-commit\` for commits — follows conventional commits
+
+## Safety
+
+- Never commit secrets, tokens, or credentials
+- Never force-push to main/master branches
+- Always create feature branches for new work
+`;
+
+function matchesRuleTemplate(existing: string, template: string): boolean {
+  return existing.replace(/\r\n/g, '\n').trim() === template.replace(/\r\n/g, '\n').trim();
 }
 
 export class AntigravityTransformer implements AgentTransformer {
@@ -159,8 +188,8 @@ trigger: always_on
 
 ## Language Conventions
 
-- Write implementation plans (\`PLAN.md\`), architectural specifications, code, variables, and code comments in English.
-- Follow configured project language preferences for user communication and task logs.
+- Write implementation plans (\`PLAN.md\`), architectural specifications, and generated artifacts in the language configured by \`language.artifacts\` in \`.ai-factory/config.yaml\` (defaulting to English if unspecified). Keep code, variable names, identifiers, and technical syntax in English.
+- Follow configured project language preferences (\`language.ui\` in \`.ai-factory/config.yaml\`) for user communication and task logs.
 
 ## Skill Usage
 
@@ -232,8 +261,30 @@ Project rules with YAML frontmatter triggers:
 Standard Model Context Protocol configuration with workspace scope.
 `;
 
-    await writeTextFile(path.join(rulesDir, 'aif-guardrails.md'), guardrailsContent);
-    await writeTextFile(path.join(rulesDir, 'aif-conventions.md'), conventionsContent);
+    const guardrailsPath = path.join(rulesDir, 'aif-guardrails.md');
+    const conventionsPath = path.join(rulesDir, 'aif-conventions.md');
+
+    if (await fileExists(guardrailsPath)) {
+      const existing = await readTextFile(guardrailsPath);
+      if (existing && !matchesRuleTemplate(existing, guardrailsContent) && !matchesRuleTemplate(existing, LEGACY_GUARDRAILS_CONTENT)) {
+        console.log(chalk.yellow('  [antigravity] Preserved modified rule: aif-guardrails.md'));
+      } else {
+        await writeTextFile(guardrailsPath, guardrailsContent);
+      }
+    } else {
+      await writeTextFile(guardrailsPath, guardrailsContent);
+    }
+
+    if (await fileExists(conventionsPath)) {
+      const existing = await readTextFile(conventionsPath);
+      if (existing && !matchesRuleTemplate(existing, conventionsContent)) {
+        console.log(chalk.yellow('  [antigravity] Preserved modified rule: aif-conventions.md'));
+      } else {
+        await writeTextFile(conventionsPath, conventionsContent);
+      }
+    } else {
+      await writeTextFile(conventionsPath, conventionsContent);
+    }
   }
 
   async cleanup(projectDir: string, skillsDir: string): Promise<void> {
@@ -262,13 +313,15 @@ Standard Model Context Protocol configuration with workspace scope.
         if (!collision) {
           await copyFile(file, destPath);
           await removeFile(file);
-        } else if (KNOWN_AGENT_FILES.has(relPath)) {
+        } else {
           const [srcBuf, destBuf] = await Promise.all([
             readFileBuffer(file),
             readFileBuffer(destPath),
           ]);
           if (srcBuf && destBuf && srcBuf.equals(destBuf)) {
             await removeFile(file);
+          } else {
+            console.log(chalk.yellow(`  [antigravity] Preserved conflicting subagent in: ${relPath}`));
           }
         }
       }
@@ -278,12 +331,6 @@ Standard Model Context Protocol configuration with workspace scope.
     // Ownership-aware cleanup of legacy v1 .agent workflows
     const legacyWorkflowsDir = path.join(projectDir, '.agent', 'workflows');
     if (await fileExists(legacyWorkflowsDir)) {
-      for (const workflowFile of KNOWN_LEGACY_WORKFLOW_FILES) {
-        const workflowPath = path.join(legacyWorkflowsDir, workflowFile);
-        if (await fileExists(workflowPath)) {
-          await removeFile(workflowPath);
-        }
-      }
       const legacyReferencesDir = path.join(legacyWorkflowsDir, 'references');
       if (await fileExists(legacyReferencesDir)) {
         for (const refFile of KNOWN_LEGACY_WORKFLOW_REFERENCES) {
@@ -291,6 +338,21 @@ Standard Model Context Protocol configuration with workspace scope.
           if (await fileExists(refPath)) {
             await removeFile(refPath);
           }
+        }
+        await removeEmptyDirBottomUp(legacyReferencesDir);
+      }
+
+      for (const workflowFile of KNOWN_LEGACY_WORKFLOW_FILES) {
+        const workflowPath = path.join(legacyWorkflowsDir, workflowFile);
+        if (await fileExists(workflowPath)) {
+          const isBare = !workflowFile.startsWith('aif-') && !workflowFile.startsWith('ai-factory-') && workflowFile !== 'aif.md';
+          if (isBare) {
+            const content = await readTextFile(workflowPath);
+            if (!content || !isAiFactoryWorkflowArtifact(content, workflowFile)) {
+              continue;
+            }
+          }
+          await removeFile(workflowPath);
         }
       }
       await removeEmptyDirBottomUp(legacyWorkflowsDir);

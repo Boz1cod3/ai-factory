@@ -13,30 +13,90 @@ import {
   partitionSkills,
 } from '../../core/installer.js';
 import { getAgentConfig, hydrateProjectAgentRegistry } from '../../core/agents.js';
-import { fileExists, removeDirectory, removeFile, copyFile, ensureDir, listFilesRecursive, readJsonFile } from '../../utils/fs.js';
+import {
+  fileExists,
+  removeDirectory,
+  removeFile,
+  copyFile,
+  ensureDir,
+  listFilesRecursive,
+  readTextFile,
+  readFileBuffer,
+  removeEmptyDirBottomUp,
+} from '../../utils/fs.js';
+import { isAiFactoryWorkflowArtifact } from '../../core/transformers/antigravity.js';
 import { resolveSkillTargets } from '../../core/skill-targets.js';
 import { prepareSkillTargets, recoverSkillMigration, withSkillProjectLock } from '../../core/skills-migration.js';
 import { collectReplacedSkills, composeInstalledExtensionSkills } from '../../core/extension-ops.js';
 
 // Old v1 skill directory names that were renamed to aif-* in v2
+// Canonical 30 package skills in v2
+const CANONICAL_V2_SKILL_NAMES = [
+  'aif',
+  'aif-architecture',
+  'aif-archive',
+  'aif-best-practices',
+  'aif-build-automation',
+  'aif-ci',
+  'aif-commit',
+  'aif-distillation',
+  'aif-dockerize',
+  'aif-docs',
+  'aif-evolve',
+  'aif-explore',
+  'aif-fix',
+  'aif-grounded',
+  'aif-implement',
+  'aif-improve',
+  'aif-loop',
+  'aif-plan',
+  'aif-qa',
+  'aif-qa-check',
+  'aif-reference',
+  'aif-review',
+  'aif-roadmap',
+  'aif-rules',
+  'aif-rules-check',
+  'aif-security-checklist',
+  'aif-skill-generator',
+  'aif-transfer',
+  'aif-verify',
+  'aif-warmup',
+];
+
+// Old v1 skill directory names that were renamed to aif-* in v2
 const OLD_SKILL_NAMES = [
   'architecture',
+  'archive',
   'best-practices',
   'build-automation',
   'ci',
   'commit',
+  'distillation',
   'dockerize',
   'docs',
   'evolve',
+  'explore',
   'feature',
   'fix',
+  'grounded',
   'implement',
   'improve',
+  'loop',
+  'plan',
+  'qa',
+  'qa-check',
+  'reference',
   'review',
+  'roadmap',
+  'rules',
+  'rules-check',
   'security-checklist',
   'skill-generator',
   'task',
+  'transfer',
   'verify',
+  'warmup',
 ];
 
 // Old v2 skill directory names before aif-* migration
@@ -82,31 +142,47 @@ const LEGACY_RULE_FILES = new Set([
 ]);
 
 const KNOWN_LEGACY_WORKFLOW_FILES = new Set([
-  'aif.md',
+  ...CANONICAL_V2_SKILL_NAMES.map(name => `${name}.md`),
   ...OLD_SKILL_NAMES.map(name => `${name}.md`),
   ...OLD_AIF_PREFIX_SKILL_NAMES.map(name => `${name}.md`),
+]);
+
+const KNOWN_LEGACY_WORKFLOW_REFERENCES = new Set([
+  'config-template.yaml',
+  'update-config.mjs',
+  'RULES-CHECK-CONTRACT.md',
+  'README.md',
 ]);
 
 function isLegacyWorkflowFile(fileName: string): boolean {
   if (!fileName.endsWith('.md')) {
     return false;
   }
-  if (KNOWN_LEGACY_WORKFLOW_FILES.has(fileName)) {
-    return true;
-  }
-  const baseName = fileName.slice(0, -3);
-  return baseName === 'aif' || baseName.startsWith('aif-') || baseName.startsWith('ai-factory-');
+  return KNOWN_LEGACY_WORKFLOW_FILES.has(fileName);
 }
 
 async function removeWorkflowFile(projectDir: string, configDir: string, skillName: string): Promise<boolean> {
+  const isBare = !skillName.startsWith('aif-') && !skillName.startsWith('ai-factory-') && skillName !== 'aif';
   const flatFile = path.join(projectDir, configDir, 'workflows', `${skillName}.md`);
   if (await fileExists(flatFile)) {
+    if (isBare) {
+      const content = await readTextFile(flatFile);
+      if (!content || !isAiFactoryWorkflowArtifact(content, skillName)) {
+        return false;
+      }
+    }
     await removeFile(flatFile);
     return true;
   }
   if (configDir !== '.agent') {
     const legacyFlatFile = path.join(projectDir, '.agent', 'workflows', `${skillName}.md`);
     if (await fileExists(legacyFlatFile)) {
+      if (isBare) {
+        const content = await readTextFile(legacyFlatFile);
+        if (!content || !isAiFactoryWorkflowArtifact(content, skillName)) {
+          return false;
+        }
+      }
       await removeFile(legacyFlatFile);
       return true;
     }
@@ -151,28 +227,18 @@ async function upgradeLocked(): Promise<void> {
 
   console.log(chalk.bold.blue('\n🏭 AI Factory - Upgrade to v2\n'));
 
-  const rawConfig = await readJsonFile<{
-    agents?: Array<{ id: string; agentsDir?: string; subagentsDir?: string }>;
-  }>(path.join(projectDir, '.ai-factory.json'));
-
-  const agentsWithLegacySubagents = new Set(
-    rawConfig?.agents
-      ?.filter(agent => agent.agentsDir === '.agents/subagents' || agent.subagentsDir === '.agents/subagents')
-      .map(agent => agent.id) ?? [],
-  );
-
   let config = await loadConfig(projectDir);
 
   if (!config) {
     console.log(chalk.red('Error: No .ai-factory.json found.'));
     console.log(chalk.dim('Run "ai-factory init" to set up your project first.'));
-    process.exit(1);
+    throw new Error('No .ai-factory.json found');
   }
 
   if (config.agents.length === 0) {
     console.log(chalk.red('Error: No agents configured in .ai-factory.json.'));
     console.log(chalk.dim('Run "ai-factory init" to configure at least one agent.'));
-    process.exit(1);
+    throw new Error('No agents configured in .ai-factory.json');
   }
 
   await hydrateProjectAgentRegistry(projectDir, {
@@ -270,19 +336,34 @@ async function upgradeLocked(): Promise<void> {
     if (isAntigravity) {
       const legacyWorkflowsDir = path.join(projectDir, '.agent', 'workflows');
       if (await fileExists(legacyWorkflowsDir)) {
+        const legacyReferencesDir = path.join(legacyWorkflowsDir, 'references');
+        if (await fileExists(legacyReferencesDir)) {
+          const refEntries = await fs.readdir(legacyReferencesDir, { withFileTypes: true });
+          for (const entry of refEntries) {
+            if (entry.isFile() && KNOWN_LEGACY_WORKFLOW_REFERENCES.has(entry.name)) {
+              await removeFile(path.join(legacyReferencesDir, entry.name));
+            }
+          }
+          await removeEmptyDirBottomUp(legacyReferencesDir);
+        }
+
         const entries = await fs.readdir(legacyWorkflowsDir, { withFileTypes: true });
         for (const entry of entries) {
           if (entry.isFile() && isLegacyWorkflowFile(entry.name)) {
-            await removeFile(path.join(legacyWorkflowsDir, entry.name));
+            const filePath = path.join(legacyWorkflowsDir, entry.name);
+            const isBare = !entry.name.startsWith('aif-') && !entry.name.startsWith('ai-factory-') && entry.name !== 'aif.md';
+            if (isBare) {
+              const content = await readTextFile(filePath);
+              if (!content || !isAiFactoryWorkflowArtifact(content, entry.name)) {
+                continue;
+              }
+            }
+            await removeFile(filePath);
             console.log(chalk.yellow(`  [antigravity] Removed legacy Antigravity 1.0 workflow: .agent/workflows/${entry.name}`));
             removedCount++;
           }
         }
-        const remainingWorkflows = await fs.readdir(legacyWorkflowsDir);
-        if (remainingWorkflows.length === 0) {
-          await removeDirectory(legacyWorkflowsDir);
-          console.log(chalk.yellow(`  [antigravity] Removed empty legacy directory: .agent/workflows/`));
-        }
+        await removeEmptyDirBottomUp(legacyWorkflowsDir);
       }
       const legacyRulesDir = path.join(projectDir, '.agent', 'rules');
       if (await fileExists(legacyRulesDir)) {
@@ -294,44 +375,47 @@ async function upgradeLocked(): Promise<void> {
             removedCount++;
           }
         }
-        const remainingRules = await fs.readdir(legacyRulesDir);
-        if (remainingRules.length === 0) {
-          await removeDirectory(legacyRulesDir);
-          console.log(chalk.yellow(`  [antigravity] Removed empty legacy directory: .agent/rules/`));
-        }
+        await removeEmptyDirBottomUp(legacyRulesDir);
       }
       const legacyAgentDir = path.join(projectDir, '.agent');
       if (await fileExists(legacyAgentDir)) {
-        const remaining = await fs.readdir(legacyAgentDir);
-        if (remaining.length === 0) {
-          await removeDirectory(legacyAgentDir);
-          console.log(chalk.yellow(`  [antigravity] Removed empty legacy directory: .agent/`));
-        }
+        await removeEmptyDirBottomUp(legacyAgentDir);
       }
       if (agent.skillsDir === '.agent/skills') {
         agent.skillsDir = agentConfig.skillsDir;
       }
       const oldSubagentsDir = path.join(projectDir, '.agents', 'subagents');
-      const hadSubagentsDir = agentsWithLegacySubagents.has(agent.id);
       if (!agent.agentsDir || agent.agentsDir === '.agents/subagents') {
         agent.agentsDir = agentConfig.agentsDir;
       }
 
-      // Migrate legacy .agents/subagents to .agents/agents for Antigravity only if configured
+      // Migrate legacy .agents/subagents to .agents/agents for Antigravity
       const newAgentsDir = path.join(projectDir, '.agents', 'agents');
-      if (hadSubagentsDir && await fileExists(oldSubagentsDir)) {
+      if (await fileExists(oldSubagentsDir)) {
         if (!await fileExists(newAgentsDir)) {
           await ensureDir(newAgentsDir);
         }
         const files = await listFilesRecursive(oldSubagentsDir);
         for (const file of files) {
-          const relPath = path.relative(oldSubagentsDir, file);
+          const relPath = path.relative(oldSubagentsDir, file).replaceAll('\\', '/');
           const newPath = path.join(newAgentsDir, relPath);
-          if (!await fileExists(newPath)) {
+          const targetExists = await fileExists(newPath);
+          if (!targetExists) {
             await copyFile(file, newPath);
+            await removeFile(file);
+          } else {
+            const [srcBuf, destBuf] = await Promise.all([
+              readFileBuffer(file),
+              readFileBuffer(newPath),
+            ]);
+            if (srcBuf && destBuf && srcBuf.equals(destBuf)) {
+              await removeFile(file);
+            } else {
+              console.log(chalk.yellow(`  [antigravity] Preserved conflicting subagent in: ${relPath}`));
+            }
           }
         }
-        await removeDirectory(oldSubagentsDir);
+        await removeEmptyDirBottomUp(oldSubagentsDir);
         agent.agentsDir = '.agents/agents';
       }
     }
@@ -358,6 +442,8 @@ async function upgradeLocked(): Promise<void> {
         projectDir,
         agentId: agent.id,
         agentsDir: agent.agentsDir,
+        installedAgentFiles: agent.installedAgentFiles,
+        managedAgentFiles: agent.managedAgentFiles,
       })
       : [];
     const effectiveConfigFiles = agent.configFiles ?? agentConfig.configFiles ?? [];

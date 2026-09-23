@@ -2,6 +2,7 @@ import path from 'path';
 import fs from 'node:fs/promises';
 import { existsSync, lstatSync } from 'fs';
 import { createHash } from 'crypto';
+import chalk from 'chalk';
 import {
   copyDirectory,
   copyFile,
@@ -106,6 +107,8 @@ export interface InstallSubagentsOptions {
   agentId?: string;
   agentsDir?: string;
   subagentsDir?: string;
+  installedAgentFiles?: string[];
+  managedAgentFiles?: Record<string, ManagedArtifactState>;
 }
 
 export interface InstallConfigFilesOptions {
@@ -958,12 +961,49 @@ export async function installSubagents(options: InstallSubagentsOptions): Promis
   const targetRoot = path.join(projectDir, agentsDir);
   await ensureDir(targetRoot);
 
+  const previousInstalledSet = new Set(options.installedAgentFiles ?? []);
+  const previousManaged = options.managedAgentFiles ?? {};
+  const installed: string[] = [];
+
   for (const relPath of availableSubagents) {
     const paths = resolveManagedSubagentPaths(projectDir, agentId, agentsDir, relPath);
+    const targetExists = await fileExists(paths.targetFile);
+
+    if (targetExists && !previousInstalledSet.has(relPath)) {
+      console.log(chalk.yellow(`  [${agentId}] Preserved untracked native agent file: ${relPath}`));
+      continue;
+    }
+
+    if (targetExists) {
+      const sourceHash = await hashManagedFile(paths.sourceFile, relPath);
+      const installedHash = await hashManagedFile(paths.targetFile, relPath);
+      const previousState = previousManaged[relPath];
+
+      if (previousState && installedHash && previousState.installedHash !== installedHash) {
+        console.log(chalk.yellow(`  [${agentId}] Preserved modified native agent file: ${relPath}`));
+        installed.push(relPath);
+        continue;
+      }
+      if (previousState && installedHash && previousState.installedHash === installedHash && previousState.installedHash !== previousState.sourceHash) {
+        installed.push(relPath);
+        continue;
+      }
+      if (!previousState && installedHash && sourceHash && installedHash !== sourceHash) {
+        console.log(chalk.yellow(`  [${agentId}] Preserved modified native agent file: ${relPath}`));
+        installed.push(relPath);
+        continue;
+      }
+      if (!sourceHash && installedHash) {
+        installed.push(relPath);
+        continue;
+      }
+    }
+
     await copyFile(paths.sourceFile, paths.targetFile);
+    installed.push(relPath);
   }
 
-  return availableSubagents;
+  return installed;
 }
 
 export async function installConfigFiles(options: InstallConfigFilesOptions): Promise<string[]> {
@@ -1409,13 +1449,19 @@ export async function updateSubagents(
     const installedHash = await hashManagedFile(paths.targetFile, relPath);
     const previousState = previousManaged[relPath];
 
-    if (force) {
-      shouldInstall.set(relPath, { install: true, reason: 'force-clean-reinstall' });
+    if (!previousInstalledSet.has(relPath)) {
+      const targetExists = await fileExists(paths.targetFile);
+      if (targetExists) {
+        console.log(chalk.yellow(`  [${agentInstallation.id}] Preserved untracked native agent file: ${relPath}`));
+        shouldInstall.set(relPath, { install: false, reason: 'untracked-target-exists' });
+        continue;
+      }
+      shouldInstall.set(relPath, { install: true, reason: 'new-in-package' });
       continue;
     }
 
-    if (!previousInstalledSet.has(relPath)) {
-      shouldInstall.set(relPath, { install: true, reason: 'new-in-package' });
+    if (force) {
+      shouldInstall.set(relPath, { install: true, reason: 'force-clean-reinstall' });
       continue;
     }
 

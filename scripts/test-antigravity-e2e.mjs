@@ -307,11 +307,17 @@ try {
     assert(fs.existsSync(path.join(USER_FILES_DIR, '.agents', 'rules', 'aif-guardrails.md')), 'Modern rules must be installed');
 
     // Verify user-owned files and parent directories were preserved
-    assertCustomUserFilesPreserved(USER_FILES_DIR, 'ai-factory upgrade');
+    assert(fs.existsSync(path.join(legacyWorkflows, 'user-custom-workflow.md')), 'user-custom-workflow.md must be preserved');
+    assert.strictEqual(fs.readFileSync(path.join(legacyWorkflows, 'user-custom-workflow.md'), 'utf8'), CUSTOM_WORKFLOW_CONTENT);
+    assert(fs.existsSync(path.join(legacyRules, 'user-custom-rule.md')), 'user-custom-rule.md must be preserved');
+    assert.strictEqual(fs.readFileSync(path.join(legacyRules, 'user-custom-rule.md'), 'utf8'), CUSTOM_RULE_CONTENT);
+    assert(fs.existsSync(path.join(USER_FILES_DIR, '.agent', 'settings.json')), '.agent/settings.json must be preserved');
+    assert.strictEqual(fs.readFileSync(path.join(USER_FILES_DIR, '.agent', 'settings.json'), 'utf8'), CUSTOM_SETTINGS_CONTENT);
+    assert(fs.existsSync(path.join(USER_FILES_DIR, '.agents', 'agents', 'user-custom-agent.md')), 'User custom agent must be migrated to .agents/agents');
+    assert.strictEqual(fs.readFileSync(path.join(USER_FILES_DIR, '.agents', 'agents', 'user-custom-agent.md'), 'utf8'), CUSTOM_SUBAGENT_CONTENT);
     assert(fs.existsSync(path.join(legacyWorkflows, 'my-custom-flow.md')), 'User-owned my-custom-flow.md must be preserved');
     assert(fs.existsSync(path.join(legacyRules, 'team.md')), 'User-owned team.md must be preserved');
     assert(fs.existsSync(path.join(USER_FILES_DIR, '.agent')), '.agent directory must be preserved when user files exist');
-    assert(fs.existsSync(path.join(USER_FILES_DIR, '.agents', 'subagents')), '.agents/subagents directory must be preserved when user files exist');
 
     console.log('✓ Preservation of user-owned files during Antigravity upgrade verified successfully!');
   } finally {
@@ -455,6 +461,202 @@ try {
     console.log('✓ AntigravityTransformer ownership-aware cleanup verified successfully!');
   } finally {
     safeRmSync(CLEANUP_TEST_DIR);
+  }
+
+  // 12. Test subagent migration collision preservation during upgrade
+  console.log('\nTesting: subagent migration collision preservation during upgrade');
+  const COLLISION_TEST_DIR = path.join(ROOT_DIR, 'temp-test-collision-ag');
+  try {
+    safeRmSync(COLLISION_TEST_DIR);
+    fs.mkdirSync(COLLISION_TEST_DIR, { recursive: true });
+
+    const subagentsDir = path.join(COLLISION_TEST_DIR, '.agents', 'subagents');
+    const agentsDir = path.join(COLLISION_TEST_DIR, '.agents', 'agents');
+    fs.mkdirSync(subagentsDir, { recursive: true });
+    fs.mkdirSync(agentsDir, { recursive: true });
+
+    const subagentContent = '# Subagents Version\n';
+    const agentsContent = '# Agents Version\n';
+
+    fs.writeFileSync(path.join(subagentsDir, 'custom.md'), subagentContent);
+    fs.writeFileSync(path.join(agentsDir, 'custom.md'), agentsContent);
+
+    // Also include a non-colliding file to verify partial migration
+    fs.writeFileSync(path.join(subagentsDir, 'non-colliding.md'), '# Non Colliding\n');
+
+    await installSkills({
+      projectDir: COLLISION_TEST_DIR,
+      agentId: 'antigravity',
+      skillsDir: '.agents/skills',
+      skills: ['aif', 'aif-plan'],
+    });
+
+    const agCollisionAgent = {
+      id: 'antigravity',
+      skillsDir: '.agents/skills',
+      agentsDir: '.agents/agents',
+      installedSkills: ['aif', 'aif-plan'],
+      installedAgentFiles: [],
+      mcp: { github: false, filesystem: false, postgres: false, chromeDevtools: false, playwright: false },
+    };
+    agCollisionAgent.managedSkills = await buildManagedSkillsState(COLLISION_TEST_DIR, agCollisionAgent, agCollisionAgent.installedSkills);
+
+    fs.writeFileSync(path.join(COLLISION_TEST_DIR, '.ai-factory.json'), JSON.stringify({
+      version: '2.18.0',
+      agents: [agCollisionAgent],
+      extensions: [],
+    }, null, 2));
+
+    execSync(`node "${cliPath}" upgrade`, {
+      cwd: COLLISION_TEST_DIR,
+      encoding: 'utf8',
+      stdio: 'pipe',
+    });
+
+    // Destination file must NOT be overwritten
+    assert(fs.existsSync(path.join(agentsDir, 'custom.md')), 'Destination custom.md must exist');
+    assert.strictEqual(fs.readFileSync(path.join(agentsDir, 'custom.md'), 'utf8'), agentsContent, 'Destination custom.md content must not be overwritten');
+
+    // Conflicting source file must NOT be deleted from .agents/subagents/
+    assert(fs.existsSync(path.join(subagentsDir, 'custom.md')), 'Source custom.md must be preserved in .agents/subagents');
+    assert.strictEqual(fs.readFileSync(path.join(subagentsDir, 'custom.md'), 'utf8'), subagentContent, 'Source custom.md content must be preserved');
+
+    // Non-colliding file must be migrated
+    assert(fs.existsSync(path.join(agentsDir, 'non-colliding.md')), 'Non-colliding file must be migrated to .agents/agents');
+    assert(!fs.existsSync(path.join(subagentsDir, 'non-colliding.md')), 'Non-colliding file must be removed from .agents/subagents');
+
+    // .agents/subagents directory must NOT be deleted while containing preserved conflicting file
+    assert(fs.existsSync(subagentsDir), '.agents/subagents directory must be preserved on collision');
+
+    console.log('✓ Subagent collision preservation during upgrade verified successfully!');
+  } finally {
+    safeRmSync(COLLISION_TEST_DIR);
+  }
+
+  // 13. Test prefix-named custom workflow preservation during upgrade
+  console.log('\nTesting: prefix-named custom workflow preservation during upgrade');
+  const PREFIX_TEST_DIR = path.join(ROOT_DIR, 'temp-test-prefix-ag');
+  try {
+    safeRmSync(PREFIX_TEST_DIR);
+    fs.mkdirSync(PREFIX_TEST_DIR, { recursive: true });
+
+    const legacyWorkflows = path.join(PREFIX_TEST_DIR, '.agent', 'workflows');
+    fs.mkdirSync(legacyWorkflows, { recursive: true });
+
+    const customWorkflowContent = '# Team Review Workflow\nDo not delete\n';
+    fs.writeFileSync(path.join(legacyWorkflows, 'aif-team-review.md'), customWorkflowContent);
+    // Known legacy workflow that should be deleted
+    fs.writeFileSync(path.join(legacyWorkflows, 'aif-plan.md'), '# Known legacy workflow\n');
+
+    await installSkills({
+      projectDir: PREFIX_TEST_DIR,
+      agentId: 'antigravity',
+      skillsDir: '.agent/skills',
+      skills: ['aif', 'aif-plan'],
+    });
+
+    const agPrefixAgent = {
+      id: 'antigravity',
+      skillsDir: '.agent/skills',
+      installedSkills: ['aif', 'aif-plan'],
+      mcp: { github: false, filesystem: false, postgres: false, chromeDevtools: false, playwright: false },
+    };
+    agPrefixAgent.managedSkills = await buildManagedSkillsState(PREFIX_TEST_DIR, agPrefixAgent, agPrefixAgent.installedSkills);
+
+    fs.writeFileSync(path.join(PREFIX_TEST_DIR, '.ai-factory.json'), JSON.stringify({
+      version: '2.0.0',
+      agents: [agPrefixAgent],
+      extensions: [],
+    }, null, 2));
+
+    execSync(`node "${cliPath}" upgrade`, {
+      cwd: PREFIX_TEST_DIR,
+      encoding: 'utf8',
+      stdio: 'pipe',
+    });
+
+    // Known legacy workflow must be deleted
+    assert(!fs.existsSync(path.join(legacyWorkflows, 'aif-plan.md')), 'Known legacy aif-plan.md must be deleted');
+
+    // Prefix-named user custom workflow must be preserved
+    assert(fs.existsSync(path.join(legacyWorkflows, 'aif-team-review.md')), 'User custom aif-team-review.md must be preserved');
+    assert.strictEqual(fs.readFileSync(path.join(legacyWorkflows, 'aif-team-review.md'), 'utf8'), customWorkflowContent);
+    assert(fs.existsSync(legacyWorkflows), '.agent/workflows must be preserved while containing user files');
+    assert(fs.existsSync(path.join(PREFIX_TEST_DIR, '.agent')), '.agent must be preserved while containing user files');
+
+    console.log('✓ Prefix-named user workflow preservation during upgrade verified successfully!');
+  } finally {
+    safeRmSync(PREFIX_TEST_DIR);
+  }
+
+  // 14. Test pre-existing native agent file and custom rules preservation during init
+  console.log('\nTesting: pre-existing native agent file and custom rules preservation during init');
+  const PRE_EXISTING_TEST_DIR = path.join(ROOT_DIR, 'temp-test-pre-existing-ag');
+  try {
+    safeRmSync(PRE_EXISTING_TEST_DIR);
+    fs.mkdirSync(PRE_EXISTING_TEST_DIR, { recursive: true });
+
+    const agentsDir = path.join(PRE_EXISTING_TEST_DIR, '.agents', 'agents');
+    const rulesDir = path.join(PRE_EXISTING_TEST_DIR, '.agents', 'rules');
+    fs.mkdirSync(agentsDir, { recursive: true });
+    fs.mkdirSync(rulesDir, { recursive: true });
+
+    const customAgentContent = '---\nname: implement-coordinator\nsubagent: true\n---\n# User Customized Coordinator\nDo not overwrite\n';
+    const customRuleContent = '---\ntrigger: always_on\n---\n# User Custom Guardrails\nDo not overwrite\n';
+
+    fs.writeFileSync(path.join(agentsDir, 'implement-coordinator.md'), customAgentContent);
+    fs.writeFileSync(path.join(rulesDir, 'aif-guardrails.md'), customRuleContent);
+
+    execSync(`node "${cliPath}" init --agents antigravity --skills aif,aif-plan --mcp filesystem`, {
+      cwd: PRE_EXISTING_TEST_DIR,
+      encoding: 'utf8',
+      stdio: 'pipe',
+    });
+
+    // Pre-existing agent file must NOT be overwritten
+    assert(fs.existsSync(path.join(agentsDir, 'implement-coordinator.md')), 'implement-coordinator.md must exist');
+    assert.strictEqual(fs.readFileSync(path.join(agentsDir, 'implement-coordinator.md'), 'utf8'), customAgentContent, 'User implement-coordinator.md must not be overwritten');
+
+    // Other built-in agent files must still be installed
+    assert(fs.existsSync(path.join(agentsDir, 'implement-worker.md')), 'implement-worker.md must be installed');
+
+    // Pre-existing custom rule must NOT be overwritten
+    assert(fs.existsSync(path.join(rulesDir, 'aif-guardrails.md')), 'aif-guardrails.md must exist');
+    assert.strictEqual(fs.readFileSync(path.join(rulesDir, 'aif-guardrails.md'), 'utf8'), customRuleContent, 'User aif-guardrails.md must not be overwritten');
+
+    // Other default rules should still be installed
+    assert(fs.existsSync(path.join(rulesDir, 'aif-conventions.md')), 'aif-conventions.md must be installed');
+
+    // Check .ai-factory.json: implement-coordinator should NOT be in installedAgentFiles
+    const config = JSON.parse(fs.readFileSync(path.join(PRE_EXISTING_TEST_DIR, '.ai-factory.json'), 'utf8'));
+    const ag = config.agents.find(a => a.id === 'antigravity');
+    assert(!ag.installedAgentFiles.includes('implement-coordinator.md'), 'Untracked user agent must not be in installedAgentFiles');
+    assert(ag.installedAgentFiles.includes('implement-worker.md'), 'Installed agent must be in installedAgentFiles');
+
+    // Verify that subsequent update and update --force also preserve untracked native agent files and custom rules
+    execSync(`node "${cliPath}" update`, {
+      cwd: PRE_EXISTING_TEST_DIR,
+      encoding: 'utf8',
+      stdio: 'pipe',
+    });
+    assert.strictEqual(fs.readFileSync(path.join(agentsDir, 'implement-coordinator.md'), 'utf8'), customAgentContent, 'User implement-coordinator.md must survive update');
+    assert.strictEqual(fs.readFileSync(path.join(rulesDir, 'aif-guardrails.md'), 'utf8'), customRuleContent, 'User aif-guardrails.md must survive update');
+
+    execSync(`node "${cliPath}" update --force`, {
+      cwd: PRE_EXISTING_TEST_DIR,
+      encoding: 'utf8',
+      stdio: 'pipe',
+    });
+    assert.strictEqual(fs.readFileSync(path.join(agentsDir, 'implement-coordinator.md'), 'utf8'), customAgentContent, 'User implement-coordinator.md must survive update --force');
+    assert.strictEqual(fs.readFileSync(path.join(rulesDir, 'aif-guardrails.md'), 'utf8'), customRuleContent, 'User aif-guardrails.md must survive update --force');
+
+    const configAfterForce = JSON.parse(fs.readFileSync(path.join(PRE_EXISTING_TEST_DIR, '.ai-factory.json'), 'utf8'));
+    const agAfterForce = configAfterForce.agents.find(a => a.id === 'antigravity');
+    assert(!agAfterForce.installedAgentFiles.includes('implement-coordinator.md'), 'Untracked user agent must not be adopted into installedAgentFiles by update --force');
+
+    console.log('✓ Pre-existing native agent file and custom rules preservation during init, update, and update --force verified successfully!');
+  } finally {
+    safeRmSync(PRE_EXISTING_TEST_DIR);
   }
 
   console.log('\n✅ ALL ANTIGRAVITY 2.0 CHECKS PASSED SUCCESSFULLY!\n');

@@ -235,14 +235,16 @@ async function initLocked(options: InitOptions): Promise<void> {
         renderContext: group.context,
       });
       skillsByTarget.set(group.physicalPath, installedSkills);
+      const existingAgent = existingConfig?.agents.find(agent => agent.id === agentSelection.id);
       const installedAgentFiles = agentConfig.agentsDir
         ? await installSubagents({
           projectDir,
           agentId: agentSelection.id,
           agentsDir: agentConfig.agentsDir,
+          installedAgentFiles: existingAgent?.installedAgentFiles,
+          managedAgentFiles: existingAgent?.managedAgentFiles,
         })
         : [];
-      const existingAgent = existingConfig?.agents.find(agent => agent.id === agentSelection.id);
       const installedConfigFiles = agentConfig.configFiles?.length
         ? await installConfigFiles({
           projectDir,
