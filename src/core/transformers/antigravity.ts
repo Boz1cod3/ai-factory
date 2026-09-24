@@ -1,6 +1,7 @@
 import type { AgentTransformer, TransformResult } from '../transformer.js';
 import chalk from 'chalk';
 import path from 'path';
+import fs from 'fs-extra';
 
 import {
   writeTextFile,
@@ -11,12 +12,12 @@ import {
   listFilesRecursive,
   readFileBuffer,
   removeEmptyDirBottomUp,
+  getSkillsDir,
 } from '../../utils/fs.js';
-
-const KNOWN_LEGACY_RULE_FILES = new Set([
+const KNOWN_LEGACY_RULE_FILES = [
   'aif-guardrails.md',
   'aif-conventions.md',
-]);
+] as const;
 
 const KNOWN_LEGACY_WORKFLOW_FILES = new Set([
   // AI Factory v2 prefixed names
@@ -84,13 +85,6 @@ const KNOWN_LEGACY_WORKFLOW_FILES = new Set([
   'warmup.md',
 ]);
 
-const KNOWN_LEGACY_WORKFLOW_REFERENCES = new Set([
-  'config-template.yaml',
-  'update-config.mjs',
-  'RULES-CHECK-CONTRACT.md',
-  'README.md',
-]);
-
 export function isAiFactoryWorkflowArtifact(content: string, fileName?: string): boolean {
   const lower = content.toLowerCase();
   if (
@@ -117,7 +111,82 @@ export function isAiFactoryWorkflowArtifact(content: string, fileName?: string):
   return false;
 }
 
-const LEGACY_GUARDRAILS_CONTENT = `---
+export async function isUnmodifiedPackageWorkflow(content: string, fileName: string): Promise<boolean> {
+  const normalizedContent = content.replace(/\r\n/g, '\n').trim();
+  const baseName = path.basename(fileName).replace(/\.md$/, '');
+  let canonicalSkill: string;
+  if (baseName === 'aif') {
+    canonicalSkill = 'aif';
+  } else if (baseName === 'feature' || baseName === 'ai-factory-feature') {
+    canonicalSkill = 'aif-plan';
+  } else if (baseName === 'task' || baseName === 'ai-factory-task') {
+    canonicalSkill = 'aif-implement';
+  } else if (baseName.startsWith('aif-')) {
+    canonicalSkill = baseName;
+  } else if (baseName.startsWith('ai-factory-')) {
+    canonicalSkill = baseName.replace(/^ai-factory-/, 'aif-');
+  } else {
+    canonicalSkill = `aif-${baseName}`;
+  }
+
+  const skillPath = path.join(getSkillsDir(), canonicalSkill, 'SKILL.md');
+  if (!(await fileExists(skillPath))) {
+    return false;
+  }
+
+  const templateContent = await readTextFile(skillPath);
+  if (templateContent === null) {
+    return false;
+  }
+
+  const normalizedTemplate = templateContent.replace(/\r\n/g, '\n').trim();
+  if (normalizedContent === normalizedTemplate) {
+    return true;
+  }
+
+  const stripFrontmatter = (text: string): string => {
+    const match = text.match(/^---[^\n]*\n[\s\S]*?\n---[^\n]*\n?/);
+    if (match) {
+      return text.slice(match[0].length).trim();
+    }
+    return text.trim();
+  };
+
+  const contentBody = stripFrontmatter(normalizedContent);
+  const templateBody = stripFrontmatter(normalizedTemplate);
+
+  return templateBody.length > 0 && contentBody === templateBody;
+}
+
+export async function getPackageReferencePath(fileName: string): Promise<string | null> {
+  if (fileName === 'README.md') {
+    return null;
+  }
+  const candidatePaths = [
+    path.join(getSkillsDir(), 'aif', 'references', fileName),
+    path.join(getSkillsDir(), 'aif-rules-check', 'references', fileName),
+  ];
+  for (const p of candidatePaths) {
+    if (await fileExists(p)) {
+      return p;
+    }
+  }
+  return null;
+}
+
+export async function isUnmodifiedPackageReference(content: string, fileName: string): Promise<boolean> {
+  const templatePath = await getPackageReferencePath(fileName);
+  if (!templatePath) {
+    return false;
+  }
+  const templateContent = await readTextFile(templatePath);
+  if (templateContent === null) {
+    return false;
+  }
+  return content.replace(/\r\n/g, '\n').trim() === templateContent.replace(/\r\n/g, '\n').trim();
+}
+
+export const LEGACY_GUARDRAILS_CONTENT = `---
 trigger: always_on
 ---
 
@@ -155,24 +224,12 @@ trigger: always_on
 - Always create feature branches for new work
 `;
 
-function matchesRuleTemplate(existing: string, template: string): boolean {
+export function matchesRuleTemplate(existing: string, template: string): boolean {
   return existing.replace(/\r\n/g, '\n').trim() === template.replace(/\r\n/g, '\n').trim();
 }
 
-export class AntigravityTransformer implements AgentTransformer {
-  transform(skillName: string, content: string): TransformResult {
-    return {
-      targetDir: skillName,
-      targetName: 'SKILL.md',
-      content,
-      flat: false,
-    };
-  }
-
-  async postInstall(projectDir: string): Promise<void> {
-    const rulesDir = path.join(projectDir, '.agents', 'rules');
-
-    const guardrailsContent = `---
+export function getGuardrailsRuleContent(_projectDir?: string): string {
+  return `---
 trigger: always_on
 ---
 
@@ -209,8 +266,10 @@ trigger: always_on
 - Never force-push to main/master branches
 - Always create feature branches for new work
 `;
+}
 
-    const conventionsContent = `---
+export function getConventionsRuleContent(): string {
+  return `---
 trigger: model_decision
 ---
 
@@ -260,6 +319,23 @@ Project rules with YAML frontmatter triggers:
 ### MCP Servers (.agents/mcp_config.json)
 Standard Model Context Protocol configuration with workspace scope.
 `;
+}
+
+export class AntigravityTransformer implements AgentTransformer {
+  transform(skillName: string, content: string): TransformResult {
+    return {
+      targetDir: skillName,
+      targetName: 'SKILL.md',
+      content,
+      flat: false,
+    };
+  }
+
+  async postInstall(projectDir: string): Promise<void> {
+    const rulesDir = path.join(projectDir, '.agents', 'rules');
+
+    const guardrailsContent = getGuardrailsRuleContent(projectDir);
+    const conventionsContent = getConventionsRuleContent();
 
     const guardrailsPath = path.join(rulesDir, 'aif-guardrails.md');
     const conventionsPath = path.join(rulesDir, 'aif-conventions.md');
@@ -294,12 +370,31 @@ Standard Model Context Protocol configuration with workspace scope.
   async cleanupTargetSkills(projectDir: string, skillsDir?: string): Promise<void> {
     const configDir = skillsDir ? path.dirname(skillsDir) : '.agents';
     const modernRulesDir = path.join(projectDir, configDir, 'rules');
-    for (const ruleFile of KNOWN_LEGACY_RULE_FILES) {
-      const rulePath = path.join(modernRulesDir, ruleFile);
-      if (await fileExists(rulePath)) {
-        await removeFile(rulePath);
+    const modernGuardrailsPath = path.join(modernRulesDir, 'aif-guardrails.md');
+    const modernConventionsPath = path.join(modernRulesDir, 'aif-conventions.md');
+
+    if (await fileExists(modernGuardrailsPath)) {
+      const content = await readTextFile(modernGuardrailsPath);
+      if (
+        content !== null &&
+        (matchesRuleTemplate(content, getGuardrailsRuleContent(projectDir)) ||
+          matchesRuleTemplate(content, LEGACY_GUARDRAILS_CONTENT))
+      ) {
+        await removeFile(modernGuardrailsPath);
+      } else {
+        console.log(chalk.yellow(`  [antigravity] Preserving modified rule: ${path.join(configDir, 'rules', 'aif-guardrails.md')}`));
       }
     }
+
+    if (await fileExists(modernConventionsPath)) {
+      const content = await readTextFile(modernConventionsPath);
+      if (content !== null && matchesRuleTemplate(content, getConventionsRuleContent())) {
+        await removeFile(modernConventionsPath);
+      } else {
+        console.log(chalk.yellow(`  [antigravity] Preserving modified rule: ${path.join(configDir, 'rules', 'aif-conventions.md')}`));
+      }
+    }
+    await removeEmptyDirBottomUp(modernRulesDir);
 
     // Ownership-aware cleanup of legacy .agents/subagents
     const legacySubagentsDir = path.join(projectDir, '.agents', 'subagents');
@@ -333,26 +428,35 @@ Standard Model Context Protocol configuration with workspace scope.
     if (await fileExists(legacyWorkflowsDir)) {
       const legacyReferencesDir = path.join(legacyWorkflowsDir, 'references');
       if (await fileExists(legacyReferencesDir)) {
-        for (const refFile of KNOWN_LEGACY_WORKFLOW_REFERENCES) {
-          const refPath = path.join(legacyReferencesDir, refFile);
-          if (await fileExists(refPath)) {
+        const refEntries = await fs.readdir(legacyReferencesDir, { withFileTypes: true });
+        for (const entry of refEntries) {
+          if (!entry.isFile()) continue;
+          const refPath = path.join(legacyReferencesDir, entry.name);
+          const content = await readTextFile(refPath);
+          const templatePath = await getPackageReferencePath(entry.name);
+          if (templatePath !== null && content !== null && (await isUnmodifiedPackageReference(content, entry.name))) {
             await removeFile(refPath);
+          } else if (!templatePath || entry.name === 'README.md') {
+            console.log(chalk.yellow(`  [antigravity] Preserving legacy reference: .agent/workflows/references/${entry.name}`));
+          } else {
+            console.log(chalk.yellow(`  [antigravity] Preserving user-modified legacy reference: .agent/workflows/references/${entry.name}`));
           }
         }
         await removeEmptyDirBottomUp(legacyReferencesDir);
       }
 
-      for (const workflowFile of KNOWN_LEGACY_WORKFLOW_FILES) {
-        const workflowPath = path.join(legacyWorkflowsDir, workflowFile);
-        if (await fileExists(workflowPath)) {
-          const isBare = !workflowFile.startsWith('aif-') && !workflowFile.startsWith('ai-factory-') && workflowFile !== 'aif.md';
-          if (isBare) {
-            const content = await readTextFile(workflowPath);
-            if (!content || !isAiFactoryWorkflowArtifact(content, workflowFile)) {
-              continue;
-            }
+      const workflowEntries = await fs.readdir(legacyWorkflowsDir, { withFileTypes: true });
+      for (const entry of workflowEntries) {
+        if (!entry.isFile()) continue;
+        if (KNOWN_LEGACY_WORKFLOW_FILES.has(entry.name)) {
+          const workflowPath = path.join(legacyWorkflowsDir, entry.name);
+          const content = await readTextFile(workflowPath);
+          if (content !== null && (await isUnmodifiedPackageWorkflow(content, entry.name))) {
+            await removeFile(workflowPath);
+            console.log(chalk.yellow(`  [antigravity] Removed legacy Antigravity 1.0 workflow: .agent/workflows/${entry.name}`));
+          } else {
+            console.log(chalk.yellow(`  [antigravity] Preserving user-modified legacy workflow: .agent/workflows/${entry.name}`));
           }
-          await removeFile(workflowPath);
         }
       }
       await removeEmptyDirBottomUp(legacyWorkflowsDir);
@@ -364,9 +468,25 @@ Standard Model Context Protocol configuration with workspace scope.
       for (const ruleFile of KNOWN_LEGACY_RULE_FILES) {
         const rulePath = path.join(legacyRulesDir, ruleFile);
         if (await fileExists(rulePath)) {
-          await removeFile(rulePath);
+          const content = await readTextFile(rulePath);
+          let matches = false;
+          if (content !== null) {
+            if (ruleFile === 'aif-guardrails.md') {
+              matches =
+                matchesRuleTemplate(content, getGuardrailsRuleContent(projectDir)) ||
+                matchesRuleTemplate(content, LEGACY_GUARDRAILS_CONTENT);
+            } else if (ruleFile === 'aif-conventions.md') {
+              matches = matchesRuleTemplate(content, getConventionsRuleContent());
+            }
+          }
+          if (matches) {
+            await removeFile(rulePath);
+          } else {
+            console.log(chalk.yellow(`  [antigravity] Preserving modified legacy rule: .agent/rules/${ruleFile}`));
+          }
         }
       }
+
       await removeEmptyDirBottomUp(legacyRulesDir);
     }
 

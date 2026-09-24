@@ -3,10 +3,23 @@ import fs from 'fs';
 import path from 'path';
 import assert from 'assert';
 import { installSkills, buildManagedSkillsState } from '../dist/core/installer.js';
-import { AntigravityTransformer } from '../dist/core/transformers/antigravity.js';
+import {
+  AntigravityTransformer,
+  LEGACY_GUARDRAILS_CONTENT,
+  getGuardrailsRuleContent,
+  getConventionsRuleContent,
+  isUnmodifiedPackageWorkflow,
+  isUnmodifiedPackageReference,
+} from '../dist/core/transformers/antigravity.js';
 
 const ROOT_DIR = path.resolve('.');
 const TEST_DIR = path.join(ROOT_DIR, 'temp-test-ag');
+
+const AIF_CANONICAL_CONTENT = fs.readFileSync(path.join(ROOT_DIR, 'skills', 'aif', 'SKILL.md'), 'utf8');
+const AIF_PLAN_CANONICAL_CONTENT = fs.readFileSync(path.join(ROOT_DIR, 'skills', 'aif-plan', 'SKILL.md'), 'utf8');
+const AIF_REVIEW_CANONICAL_CONTENT = fs.readFileSync(path.join(ROOT_DIR, 'skills', 'aif-review', 'SKILL.md'), 'utf8');
+const AIF_COMMIT_CANONICAL_CONTENT = fs.readFileSync(path.join(ROOT_DIR, 'skills', 'aif-commit', 'SKILL.md'), 'utf8');
+const AIF_IMPLEMENT_CANONICAL_CONTENT = fs.readFileSync(path.join(ROOT_DIR, 'skills', 'aif-implement', 'SKILL.md'), 'utf8');
 
 function safeRmSync(dir) {
   if (fs.existsSync(dir)) {
@@ -193,9 +206,9 @@ try {
     fs.mkdirSync(legacyWorkflows, { recursive: true });
     fs.mkdirSync(legacyRules, { recursive: true });
 
-    fs.writeFileSync(path.join(legacyWorkflows, 'aif.md'), '# Legacy workflow\n');
-    fs.writeFileSync(path.join(legacyWorkflows, 'aif-plan.md'), '# Legacy plan workflow\n');
-    fs.writeFileSync(path.join(legacyRules, 'aif-guardrails.md'), '# Legacy rule without trigger\n');
+    fs.writeFileSync(path.join(legacyWorkflows, 'aif.md'), AIF_CANONICAL_CONTENT);
+    fs.writeFileSync(path.join(legacyWorkflows, 'aif-plan.md'), AIF_PLAN_CANONICAL_CONTENT);
+    fs.writeFileSync(path.join(legacyRules, 'aif-guardrails.md'), LEGACY_GUARDRAILS_CONTENT);
 
     await installSkills({
       projectDir: LEGACY_DIR,
@@ -257,11 +270,11 @@ try {
     const legacyRules = path.join(USER_FILES_DIR, '.agent', 'rules');
 
     // Legacy AI Factory files
-    fs.writeFileSync(path.join(legacyWorkflows, 'aif.md'), '# Legacy workflow\n');
-    fs.writeFileSync(path.join(legacyWorkflows, 'aif-plan.md'), '# Legacy plan workflow\n');
-    fs.writeFileSync(path.join(legacyWorkflows, 'commit.md'), '# Legacy workflow\n');
-    fs.writeFileSync(path.join(legacyRules, 'aif-guardrails.md'), '# Legacy rule\n');
-    fs.writeFileSync(path.join(legacyRules, 'aif-conventions.md'), '# Legacy rule\n');
+    fs.writeFileSync(path.join(legacyWorkflows, 'aif.md'), AIF_CANONICAL_CONTENT);
+    fs.writeFileSync(path.join(legacyWorkflows, 'aif-plan.md'), AIF_PLAN_CANONICAL_CONTENT);
+    fs.writeFileSync(path.join(legacyWorkflows, 'commit.md'), AIF_COMMIT_CANONICAL_CONTENT);
+    fs.writeFileSync(path.join(legacyRules, 'aif-guardrails.md'), LEGACY_GUARDRAILS_CONTENT);
+    fs.writeFileSync(path.join(legacyRules, 'aif-conventions.md'), getConventionsRuleContent());
 
     // Additional user-owned custom files
     fs.writeFileSync(path.join(legacyWorkflows, 'my-custom-flow.md'), '# Custom workflow\n');
@@ -409,11 +422,11 @@ try {
     fs.writeFileSync(path.join(agentsDir, 'colliding-agent.md'), 'agents content\n');
 
     // 2. Legacy workflows: one known, one user-owned
-    fs.writeFileSync(path.join(legacyWorkflows, 'aif-plan.md'), '# Known legacy workflow\n');
+    fs.writeFileSync(path.join(legacyWorkflows, 'aif-plan.md'), AIF_PLAN_CANONICAL_CONTENT);
     fs.writeFileSync(path.join(legacyWorkflows, 'user-flow.md'), '# User workflow\n');
 
     // 3. Legacy rules: one known, one user-owned
-    fs.writeFileSync(path.join(legacyRules, 'aif-guardrails.md'), '# Known legacy rule\n');
+    fs.writeFileSync(path.join(legacyRules, 'aif-guardrails.md'), LEGACY_GUARDRAILS_CONTENT);
     fs.writeFileSync(path.join(legacyRules, 'team-rules.md'), '# User rule\n');
 
     // 4. Other user-owned file in .agent/
@@ -546,7 +559,7 @@ try {
     const customWorkflowContent = '# Team Review Workflow\nDo not delete\n';
     fs.writeFileSync(path.join(legacyWorkflows, 'aif-team-review.md'), customWorkflowContent);
     // Known legacy workflow that should be deleted
-    fs.writeFileSync(path.join(legacyWorkflows, 'aif-plan.md'), '# Known legacy workflow\n');
+    fs.writeFileSync(path.join(legacyWorkflows, 'aif-plan.md'), AIF_PLAN_CANONICAL_CONTENT);
 
     await installSkills({
       projectDir: PREFIX_TEST_DIR,
@@ -658,6 +671,326 @@ try {
   } finally {
     safeRmSync(PRE_EXISTING_TEST_DIR);
   }
+
+  // 15. Test local modification preservation in .agents/agents/ during update and update --force
+  console.log('\nTesting: local modification preservation in .agents/agents/ during update and update --force');
+  const LOCAL_MOD_DIR = path.join(ROOT_DIR, 'temp-test-local-mod-ag');
+  try {
+    safeRmSync(LOCAL_MOD_DIR);
+    fs.mkdirSync(LOCAL_MOD_DIR, { recursive: true });
+
+    // Initialize project with Antigravity 2.0
+    execSync(`node "${cliPath}" init --agents antigravity --skills aif,aif-plan --mcp filesystem`, {
+      cwd: LOCAL_MOD_DIR,
+      encoding: 'utf8',
+      stdio: 'pipe',
+    });
+
+    const agentsDir = path.join(LOCAL_MOD_DIR, '.agents', 'agents');
+    const workerPath = path.join(agentsDir, 'implement-worker.md');
+    const coordinatorPath = path.join(agentsDir, 'implement-coordinator.md');
+
+    assert(fs.existsSync(workerPath), 'implement-worker.md must exist after init');
+    assert(fs.existsSync(coordinatorPath), 'implement-coordinator.md must exist after init');
+
+    const originalCoordinatorContent = fs.readFileSync(coordinatorPath, 'utf8');
+    const customWorkerContent = '# Implement Worker\n// Custom company coordinator instructions\n';
+
+    // Modify .agents/agents/implement-worker.md with custom instructions
+    fs.writeFileSync(workerPath, customWorkerContent);
+    // Leave .agents/agents/implement-coordinator.md unmodified
+
+    // Run ai-factory update
+    const updateOutput = execSync(`node "${cliPath}" update 2>&1`, {
+      cwd: LOCAL_MOD_DIR,
+      encoding: 'utf8',
+      stdio: 'pipe',
+    });
+    console.log(updateOutput);
+
+    // Assert implement-worker.md retains custom instructions (negative path - not overwritten)
+    assert.strictEqual(
+      fs.readFileSync(workerPath, 'utf8'),
+      customWorkerContent,
+      'implement-worker.md must retain custom instructions across update',
+    );
+    // Assert warning output logged
+    assert(
+      updateOutput.includes('Local modifications detected in agent file "implement-worker.md"') ||
+      updateOutput.includes('implement-worker.md'),
+      'Warning output must be logged for modified agent file on update',
+    );
+
+    // Run ai-factory update --force
+    const forceUpdateOutput = execSync(`node "${cliPath}" update --force 2>&1`, {
+      cwd: LOCAL_MOD_DIR,
+      encoding: 'utf8',
+      stdio: 'pipe',
+    });
+    console.log(forceUpdateOutput);
+
+    // Assert warning output logged for force update
+    assert(
+      forceUpdateOutput.includes('--force does not overwrite local agent changes') ||
+      forceUpdateOutput.includes('Local modifications detected in agent file "implement-worker.md"'),
+      'forceUpdateOutput must contain warning that --force does not overwrite local agent changes',
+    );
+    assert(
+      forceUpdateOutput.includes('implement-worker.md (--force ignored; local changes preserved)') ||
+      forceUpdateOutput.includes('implement-worker.md'),
+      'forceUpdateOutput must report implement-worker.md as preserved',
+    );
+
+    // Assert implement-worker.md STILL retains custom instructions (--force does not overwrite)
+    assert.strictEqual(
+      fs.readFileSync(workerPath, 'utf8'),
+      customWorkerContent,
+      'implement-worker.md must STILL retain custom instructions across update --force',
+    );
+    // Assert implement-coordinator.md exists and is valid (positive path)
+    assert(fs.existsSync(coordinatorPath), 'implement-coordinator.md must exist after force update');
+    assert.strictEqual(
+      fs.readFileSync(coordinatorPath, 'utf8'),
+      originalCoordinatorContent,
+      'implement-coordinator.md must remain valid across force update',
+    );
+
+    // Assert .ai-factory.json has installedAgentFiles and managedAgentFiles containing implement-worker.md and implement-coordinator.md
+    const configAfterUpdate = JSON.parse(fs.readFileSync(path.join(LOCAL_MOD_DIR, '.ai-factory.json'), 'utf8'));
+    const agAfterUpdate = configAfterUpdate.agents.find(a => a.id === 'antigravity');
+    assert(agAfterUpdate, 'antigravity agent must exist in .ai-factory.json');
+    assert(
+      agAfterUpdate.installedAgentFiles.includes('implement-worker.md'),
+      '.ai-factory.json must track modified implement-worker.md in installedAgentFiles',
+    );
+    assert(
+      agAfterUpdate.installedAgentFiles.includes('implement-coordinator.md'),
+      '.ai-factory.json must track implement-coordinator.md in installedAgentFiles',
+    );
+    assert(agAfterUpdate.managedAgentFiles, 'managedAgentFiles must exist in .ai-factory.json');
+    assert(
+      agAfterUpdate.managedAgentFiles['implement-worker.md'],
+      'managedAgentFiles must retain implement-worker.md state across update',
+    );
+    assert(
+      agAfterUpdate.managedAgentFiles['implement-worker.md'].sourceHash,
+      'managedAgentFiles implement-worker.md must retain sourceHash',
+    );
+    assert(
+      agAfterUpdate.managedAgentFiles['implement-worker.md'].installedHash,
+      'managedAgentFiles implement-worker.md must retain installedHash',
+    );
+    assert(
+      agAfterUpdate.managedAgentFiles['implement-coordinator.md'],
+      'managedAgentFiles must retain implement-coordinator.md state across update',
+    );
+    assert(
+      agAfterUpdate.managedAgentFiles['implement-coordinator.md'].sourceHash,
+      'managedAgentFiles implement-coordinator.md must retain sourceHash',
+    );
+    assert(
+      agAfterUpdate.managedAgentFiles['implement-coordinator.md'].installedHash,
+      'managedAgentFiles implement-coordinator.md must retain installedHash',
+    );
+
+    console.log('✓ Local modification preservation in .agents/agents/ verified successfully!');
+  } finally {
+    safeRmSync(LOCAL_MOD_DIR);
+  }
+
+  // 16. Test custom rule preservation during agent deselection / cleanup
+  console.log('\nTesting: custom rule preservation during agent deselection / cleanup');
+  const DESELECTION_TEST_DIR = path.join(ROOT_DIR, 'temp-test-deselection-ag');
+  try {
+    safeRmSync(DESELECTION_TEST_DIR);
+    fs.mkdirSync(DESELECTION_TEST_DIR, { recursive: true });
+
+    // Initialize project with Antigravity 2.0
+    execSync(`node "${cliPath}" init --agents antigravity --skills aif,aif-plan --mcp filesystem`, {
+      cwd: DESELECTION_TEST_DIR,
+      encoding: 'utf8',
+      stdio: 'pipe',
+    });
+
+    const rulesDir = path.join(DESELECTION_TEST_DIR, '.agents', 'rules');
+    const guardrailsPath = path.join(rulesDir, 'aif-guardrails.md');
+    const conventionsPath = path.join(rulesDir, 'aif-conventions.md');
+
+    assert(fs.existsSync(guardrailsPath), 'aif-guardrails.md must exist after init');
+    assert(fs.existsSync(conventionsPath), 'aif-conventions.md must exist after init');
+
+    // Modify .agents/rules/aif-guardrails.md with custom axiom
+    const customGuardrailContent = '---\ntrigger: always_on\n---\n# Custom Security Policy\n- User custom axiom\n';
+    fs.writeFileSync(guardrailsPath, customGuardrailContent);
+    // Leave .agents/rules/aif-conventions.md unmodified (matching package template)
+
+    // Trigger deselection / cleanup by selecting Claude Code instead of Antigravity
+    const deselectOutput = execSync(`node "${cliPath}" init --agents claude --skills aif 2>&1`, {
+      cwd: DESELECTION_TEST_DIR,
+      encoding: 'utf8',
+      stdio: 'pipe',
+    });
+    console.log(deselectOutput);
+
+    // Assert notice is logged during agent deselection
+    assert(
+      deselectOutput.includes('Preserving modified rule') &&
+      deselectOutput.includes('aif-guardrails.md'),
+      'deselectOutput must contain notice that modified rule is preserved',
+    );
+
+    // Assert aif-guardrails.md is preserved on disk (negative path)
+    assert(fs.existsSync(guardrailsPath), 'aif-guardrails.md must be preserved on disk after deselection');
+    assert.strictEqual(
+      fs.readFileSync(guardrailsPath, 'utf8'),
+      customGuardrailContent,
+      'aif-guardrails.md must retain custom axiom',
+    );
+
+    // Assert aif-conventions.md is deleted (positive path)
+    assert(!fs.existsSync(conventionsPath), 'Unmodified aif-conventions.md must be deleted after deselection');
+
+    // Assert .agents/rules/ directory is preserved because custom rule remains
+    assert(fs.existsSync(rulesDir), '.agents/rules/ directory must be preserved because custom rule remains');
+
+
+    // Also assert that direct cleanupTargetSkills() respects custom rule preservation
+    const transformer = new AntigravityTransformer();
+    await transformer.cleanupTargetSkills(DESELECTION_TEST_DIR, '.agents/skills');
+    assert(fs.existsSync(guardrailsPath), 'aif-guardrails.md must still be preserved after direct cleanupTargetSkills()');
+    assert(fs.existsSync(rulesDir), '.agents/rules/ must still exist after direct cleanupTargetSkills()');
+
+    // When the custom rule is removed, cleanupTargetSkills() should clean up the directory bottom-up
+    fs.unlinkSync(guardrailsPath);
+    await transformer.cleanupTargetSkills(DESELECTION_TEST_DIR, '.agents/skills');
+    assert(!fs.existsSync(rulesDir), '.agents/rules/ directory must be cleanly removed once all custom rules are gone');
+
+    console.log('✓ Custom rule preservation during agent deselection / cleanup verified successfully!');
+  } finally {
+    safeRmSync(DESELECTION_TEST_DIR);
+  }
+
+  // 17. Test user-modified legacy workflow, reference & rule preservation during upgrade
+  console.log('\nTesting: user-modified legacy workflow, reference & rule preservation during upgrade');
+  const MODIFIED_LEGACY_DIR = path.join(ROOT_DIR, 'temp-test-modified-legacy-ag');
+  try {
+    safeRmSync(MODIFIED_LEGACY_DIR);
+    fs.mkdirSync(MODIFIED_LEGACY_DIR, { recursive: true });
+
+    const legacyWorkflows = path.join(MODIFIED_LEGACY_DIR, '.agent', 'workflows');
+    const legacyReferences = path.join(legacyWorkflows, 'references');
+    const legacyRules = path.join(MODIFIED_LEGACY_DIR, '.agent', 'rules');
+    fs.mkdirSync(legacyReferences, { recursive: true });
+    fs.mkdirSync(legacyRules, { recursive: true });
+
+    const customPlanContent = '# Custom Plan Workflow\nUser modifications here\n';
+    const customCommitContent = '# Custom Bare Commit Workflow\nUser modifications here\n';
+    const customReadmeContent = '# User Reference Notes\nImportant info\n';
+    const customConfigContent = '# User customized config template\ncustom_setting: true\n';
+    const customGuardrailContent = '# User customized guardrails\nStrict rule\n';
+
+    // User-modified legacy files
+    fs.writeFileSync(path.join(legacyWorkflows, 'aif-plan.md'), customPlanContent);
+    fs.writeFileSync(path.join(legacyWorkflows, 'commit.md'), customCommitContent);
+    fs.writeFileSync(path.join(legacyReferences, 'README.md'), customReadmeContent);
+    fs.writeFileSync(path.join(legacyReferences, 'config-template.yaml'), customConfigContent);
+    fs.writeFileSync(path.join(legacyRules, 'aif-guardrails.md'), customGuardrailContent);
+
+    // Unmodified package files that SHOULD be deleted
+    fs.writeFileSync(path.join(legacyWorkflows, 'aif-review.md'), AIF_REVIEW_CANONICAL_CONTENT);
+    fs.writeFileSync(path.join(legacyWorkflows, 'aif.md'), AIF_CANONICAL_CONTENT);
+    const unmodifiedUpdateConfig = fs.readFileSync(path.join(ROOT_DIR, 'skills', 'aif', 'references', 'update-config.mjs'), 'utf8');
+    fs.writeFileSync(path.join(legacyReferences, 'update-config.mjs'), unmodifiedUpdateConfig);
+    fs.writeFileSync(path.join(legacyRules, 'aif-conventions.md'), getConventionsRuleContent());
+
+    await installSkills({
+      projectDir: MODIFIED_LEGACY_DIR,
+      agentId: 'antigravity',
+      skillsDir: '.agent/skills',
+      skills: ['aif', 'aif-plan', 'aif-review'],
+    });
+
+    const agModifiedAgent = {
+      id: 'antigravity',
+      skillsDir: '.agent/skills',
+      installedSkills: ['aif', 'aif-plan', 'aif-review'],
+      mcp: { github: false, filesystem: false, postgres: false, chromeDevtools: false, playwright: false },
+    };
+    agModifiedAgent.managedSkills = await buildManagedSkillsState(MODIFIED_LEGACY_DIR, agModifiedAgent, agModifiedAgent.installedSkills);
+
+    fs.writeFileSync(path.join(MODIFIED_LEGACY_DIR, '.ai-factory.json'), JSON.stringify({
+      version: '2.0.0',
+      agents: [agModifiedAgent],
+      extensions: [],
+    }, null, 2));
+
+    const upgradeOutput = execSync(`node "${cliPath}" upgrade`, {
+      cwd: MODIFIED_LEGACY_DIR,
+      encoding: 'utf8',
+      stdio: 'pipe',
+    });
+    console.log(upgradeOutput);
+
+    // Assert unmodified aif-review.md and aif-conventions.md are cleanly removed
+    assert(!fs.existsSync(path.join(legacyWorkflows, 'aif-review.md')), 'Unmodified aif-review.md must be deleted');
+    assert(!fs.existsSync(path.join(legacyWorkflows, 'aif.md')), 'Unmodified aif.md must be deleted');
+    assert(!fs.existsSync(path.join(legacyReferences, 'update-config.mjs')), 'Unmodified update-config.mjs must be deleted');
+    assert(!fs.existsSync(path.join(legacyRules, 'aif-conventions.md')), 'Unmodified aif-conventions.md must be deleted');
+
+    // Assert modified aif-plan.md, commit.md, references/README.md, and aif-guardrails.md are ALL preserved on disk
+    assert(fs.existsSync(path.join(legacyWorkflows, 'aif-plan.md')), 'User-modified aif-plan.md must be preserved');
+    assert.strictEqual(fs.readFileSync(path.join(legacyWorkflows, 'aif-plan.md'), 'utf8'), customPlanContent);
+
+    assert(fs.existsSync(path.join(legacyWorkflows, 'commit.md')), 'User-modified commit.md must be preserved');
+    assert.strictEqual(fs.readFileSync(path.join(legacyWorkflows, 'commit.md'), 'utf8'), customCommitContent);
+
+    assert(fs.existsSync(path.join(legacyReferences, 'README.md')), 'references/README.md must be preserved');
+    assert.strictEqual(fs.readFileSync(path.join(legacyReferences, 'README.md'), 'utf8'), customReadmeContent);
+
+    assert(fs.existsSync(path.join(legacyReferences, 'config-template.yaml')), 'User-modified references/config-template.yaml must be preserved');
+    assert.strictEqual(fs.readFileSync(path.join(legacyReferences, 'config-template.yaml'), 'utf8'), customConfigContent);
+
+    assert(fs.existsSync(path.join(legacyRules, 'aif-guardrails.md')), 'User-modified aif-guardrails.md must be preserved');
+    assert.strictEqual(fs.readFileSync(path.join(legacyRules, 'aif-guardrails.md'), 'utf8'), customGuardrailContent);
+
+    // Assert warnings logged for preserved files
+    assert(upgradeOutput.includes('Preserving user-modified legacy workflow: .agent/workflows/aif-plan.md'), 'Warning for aif-plan.md must be logged');
+    assert(upgradeOutput.includes('Preserving user-modified legacy workflow: .agent/workflows/commit.md'), 'Warning for commit.md must be logged');
+    assert(upgradeOutput.includes('Preserving legacy reference: .agent/workflows/references/README.md'), 'Warning for references/README.md must be logged');
+    assert(upgradeOutput.includes('Preserving user-modified legacy reference: .agent/workflows/references/config-template.yaml'), 'Warning for config-template.yaml must be logged');
+    assert(upgradeOutput.includes('Preserving modified legacy rule: .agent/rules/aif-guardrails.md'), 'Warning for aif-guardrails.md must be logged');
+
+    // Assert .agent/ is preserved because custom files remain
+    assert(fs.existsSync(legacyReferences), 'references dir must be preserved while containing user files');
+    assert(fs.existsSync(legacyWorkflows), '.agent/workflows must be preserved while containing user files');
+    assert(fs.existsSync(legacyRules), '.agent/rules must be preserved while containing user files');
+    assert(fs.existsSync(path.join(MODIFIED_LEGACY_DIR, '.agent')), '.agent must be preserved while containing user files');
+
+    // Unit test helpers directly
+    assert.strictEqual(await isUnmodifiedPackageWorkflow(AIF_PLAN_CANONICAL_CONTENT, 'aif-plan.md'), true);
+    assert.strictEqual(await isUnmodifiedPackageWorkflow(AIF_REVIEW_CANONICAL_CONTENT, 'aif-review.md'), true);
+    // Bare format without frontmatter matches body
+    const bodyOnly = AIF_PLAN_CANONICAL_CONTENT.replace(/^---[\s\S]*?---\n?/, '');
+    assert.strictEqual(await isUnmodifiedPackageWorkflow(bodyOnly, 'aif-plan.md'), true);
+    assert.strictEqual(await isUnmodifiedPackageWorkflow(customPlanContent, 'aif-plan.md'), false);
+    assert.strictEqual(await isUnmodifiedPackageWorkflow(AIF_COMMIT_CANONICAL_CONTENT, 'commit.md'), true);
+    assert.strictEqual(await isUnmodifiedPackageWorkflow(customCommitContent, 'commit.md'), false);
+    assert.strictEqual(await isUnmodifiedPackageWorkflow(AIF_PLAN_CANONICAL_CONTENT, 'ai-factory-feature.md'), true);
+    assert.strictEqual(await isUnmodifiedPackageWorkflow(AIF_IMPLEMENT_CANONICAL_CONTENT, 'ai-factory-task.md'), true);
+    assert.strictEqual(await isUnmodifiedPackageWorkflow('anything', 'non-existent-flow.md'), false);
+
+    const unmodifiedConfigTemplate = fs.readFileSync(path.join(ROOT_DIR, 'skills', 'aif', 'references', 'config-template.yaml'), 'utf8');
+    assert.strictEqual(await isUnmodifiedPackageReference(unmodifiedConfigTemplate, 'config-template.yaml'), true);
+    assert.strictEqual(await isUnmodifiedPackageReference(customReadmeContent, 'README.md'), false);
+    assert.strictEqual(await isUnmodifiedPackageReference(unmodifiedUpdateConfig, 'update-config.mjs'), true);
+    assert.strictEqual(await isUnmodifiedPackageReference(customConfigContent, 'config-template.yaml'), false);
+    assert.strictEqual(await isUnmodifiedPackageReference('custom', 'nonexistent-ref.md'), false);
+
+    console.log('✓ User-modified legacy workflows, references, and rules preservation verified successfully!');
+  } finally {
+    safeRmSync(MODIFIED_LEGACY_DIR);
+  }
+
 
   console.log('\n✅ ALL ANTIGRAVITY 2.0 CHECKS PASSED SUCCESSFULLY!\n');
 } finally {

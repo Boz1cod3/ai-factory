@@ -24,7 +24,16 @@ import {
   readFileBuffer,
   removeEmptyDirBottomUp,
 } from '../../utils/fs.js';
-import { isAiFactoryWorkflowArtifact } from '../../core/transformers/antigravity.js';
+import {
+  isAiFactoryWorkflowArtifact,
+  isUnmodifiedPackageWorkflow,
+  isUnmodifiedPackageReference,
+  getPackageReferencePath,
+  matchesRuleTemplate,
+  getGuardrailsRuleContent,
+  getConventionsRuleContent,
+  LEGACY_GUARDRAILS_CONTENT,
+} from '../../core/transformers/antigravity.js';
 import { resolveSkillTargets } from '../../core/skill-targets.js';
 import { prepareSkillTargets, recoverSkillMigration, withSkillProjectLock } from '../../core/skills-migration.js';
 import { collectReplacedSkills, composeInstalledExtensionSkills } from '../../core/extension-ops.js';
@@ -147,13 +156,6 @@ const KNOWN_LEGACY_WORKFLOW_FILES = new Set([
   ...OLD_AIF_PREFIX_SKILL_NAMES.map(name => `${name}.md`),
 ]);
 
-const KNOWN_LEGACY_WORKFLOW_REFERENCES = new Set([
-  'config-template.yaml',
-  'update-config.mjs',
-  'RULES-CHECK-CONTRACT.md',
-  'README.md',
-]);
-
 function isLegacyWorkflowFile(fileName: string): boolean {
   if (!fileName.endsWith('.md')) {
     return false;
@@ -163,25 +165,34 @@ function isLegacyWorkflowFile(fileName: string): boolean {
 
 async function removeWorkflowFile(projectDir: string, configDir: string, skillName: string): Promise<boolean> {
   const isBare = !skillName.startsWith('aif-') && !skillName.startsWith('ai-factory-') && skillName !== 'aif';
-  const flatFile = path.join(projectDir, configDir, 'workflows', `${skillName}.md`);
+  const fileName = `${skillName}.md`;
+  const flatFile = path.join(projectDir, configDir, 'workflows', fileName);
   if (await fileExists(flatFile)) {
-    if (isBare) {
-      const content = await readTextFile(flatFile);
-      if (!content || !isAiFactoryWorkflowArtifact(content, skillName)) {
-        return false;
-      }
+    const content = await readTextFile(flatFile);
+    if (!content) {
+      return false;
+    }
+    if (isBare && !isAiFactoryWorkflowArtifact(content, skillName)) {
+      return false;
+    }
+    if (!(await isUnmodifiedPackageWorkflow(content, fileName))) {
+      return false;
     }
     await removeFile(flatFile);
     return true;
   }
   if (configDir !== '.agent') {
-    const legacyFlatFile = path.join(projectDir, '.agent', 'workflows', `${skillName}.md`);
+    const legacyFlatFile = path.join(projectDir, '.agent', 'workflows', fileName);
     if (await fileExists(legacyFlatFile)) {
-      if (isBare) {
-        const content = await readTextFile(legacyFlatFile);
-        if (!content || !isAiFactoryWorkflowArtifact(content, skillName)) {
-          return false;
-        }
+      const content = await readTextFile(legacyFlatFile);
+      if (!content) {
+        return false;
+      }
+      if (isBare && !isAiFactoryWorkflowArtifact(content, skillName)) {
+        return false;
+      }
+      if (!(await isUnmodifiedPackageWorkflow(content, fileName))) {
+        return false;
       }
       await removeFile(legacyFlatFile);
       return true;
@@ -340,8 +351,16 @@ async function upgradeLocked(): Promise<void> {
         if (await fileExists(legacyReferencesDir)) {
           const refEntries = await fs.readdir(legacyReferencesDir, { withFileTypes: true });
           for (const entry of refEntries) {
-            if (entry.isFile() && KNOWN_LEGACY_WORKFLOW_REFERENCES.has(entry.name)) {
-              await removeFile(path.join(legacyReferencesDir, entry.name));
+            if (!entry.isFile()) continue;
+            const refPath = path.join(legacyReferencesDir, entry.name);
+            const content = await readTextFile(refPath);
+            const templatePath = await getPackageReferencePath(entry.name);
+            if (templatePath !== null && content !== null && (await isUnmodifiedPackageReference(content, entry.name))) {
+              await removeFile(refPath);
+            } else if (!templatePath || entry.name === 'README.md') {
+              console.log(chalk.yellow(`  [antigravity] Preserving legacy reference: .agent/workflows/references/${entry.name}`));
+            } else {
+              console.log(chalk.yellow(`  [antigravity] Preserving user-modified legacy reference: .agent/workflows/references/${entry.name}`));
             }
           }
           await removeEmptyDirBottomUp(legacyReferencesDir);
@@ -351,16 +370,14 @@ async function upgradeLocked(): Promise<void> {
         for (const entry of entries) {
           if (entry.isFile() && isLegacyWorkflowFile(entry.name)) {
             const filePath = path.join(legacyWorkflowsDir, entry.name);
-            const isBare = !entry.name.startsWith('aif-') && !entry.name.startsWith('ai-factory-') && entry.name !== 'aif.md';
-            if (isBare) {
-              const content = await readTextFile(filePath);
-              if (!content || !isAiFactoryWorkflowArtifact(content, entry.name)) {
-                continue;
-              }
+            const content = await readTextFile(filePath);
+            if (content !== null && (await isUnmodifiedPackageWorkflow(content, entry.name))) {
+              await removeFile(filePath);
+              console.log(chalk.yellow(`  [antigravity] Removed legacy Antigravity 1.0 workflow: .agent/workflows/${entry.name}`));
+              removedCount++;
+            } else {
+              console.log(chalk.yellow(`  [antigravity] Preserving user-modified legacy workflow: .agent/workflows/${entry.name}`));
             }
-            await removeFile(filePath);
-            console.log(chalk.yellow(`  [antigravity] Removed legacy Antigravity 1.0 workflow: .agent/workflows/${entry.name}`));
-            removedCount++;
           }
         }
         await removeEmptyDirBottomUp(legacyWorkflowsDir);
@@ -370,9 +387,25 @@ async function upgradeLocked(): Promise<void> {
         const entries = await fs.readdir(legacyRulesDir, { withFileTypes: true });
         for (const entry of entries) {
           if (entry.isFile() && LEGACY_RULE_FILES.has(entry.name)) {
-            await removeFile(path.join(legacyRulesDir, entry.name));
-            console.log(chalk.yellow(`  [antigravity] Removed legacy Antigravity 1.0 rule: .agent/rules/${entry.name}`));
-            removedCount++;
+            const rulePath = path.join(legacyRulesDir, entry.name);
+            const content = await readTextFile(rulePath);
+            let matches = false;
+            if (content !== null) {
+              if (entry.name === 'aif-guardrails.md') {
+                matches =
+                  matchesRuleTemplate(content, getGuardrailsRuleContent(projectDir)) ||
+                  matchesRuleTemplate(content, LEGACY_GUARDRAILS_CONTENT);
+              } else if (entry.name === 'aif-conventions.md') {
+                matches = matchesRuleTemplate(content, getConventionsRuleContent());
+              }
+            }
+            if (matches) {
+              await removeFile(rulePath);
+              console.log(chalk.yellow(`  [antigravity] Removed legacy Antigravity 1.0 rule: .agent/rules/${entry.name}`));
+              removedCount++;
+            } else {
+              console.log(chalk.yellow(`  [antigravity] Preserving modified legacy rule: .agent/rules/${entry.name}`));
+            }
           }
         }
         await removeEmptyDirBottomUp(legacyRulesDir);
