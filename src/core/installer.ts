@@ -364,6 +364,9 @@ function getBundledAgentFilesSourceDir(agentId: string): string | null {
   }
 
   if (agentConfig.agentsSourceDir) {
+    if (path.isAbsolute(agentConfig.agentsSourceDir)) {
+      return agentConfig.agentsSourceDir;
+    }
     return getPackagePath(agentConfig.agentsSourceDir);
   }
 
@@ -995,15 +998,19 @@ export async function installSubagents(options: InstallSubagentsOptions): Promis
     const paths = resolveManagedSubagentPaths(projectDir, agentId, agentsDir, relPath);
     const targetExists = await fileExists(paths.targetFile);
 
-    if (targetExists && !previousInstalledSet.has(relPath)) {
-      console.log(chalk.yellow(`  [${agentId}] Preserved untracked native agent file: ${relPath}`));
-      continue;
-    }
-
     if (targetExists) {
       const sourceHash = await hashManagedFile(paths.sourceFile, relPath);
       const installedHash = await hashManagedFile(paths.targetFile, relPath);
       const previousState = previousManaged[relPath];
+
+      if (!previousInstalledSet.has(relPath)) {
+        if (installedHash && sourceHash && installedHash === sourceHash) {
+          installed.push(relPath);
+          continue;
+        }
+        console.log(chalk.yellow(`  [${agentId}] Preserved untracked native agent file: ${relPath}`));
+        continue;
+      }
 
       if (previousState && installedHash && previousState.installedHash !== installedHash) {
         console.log(chalk.yellow(`  [${agentId}] Preserved modified native agent file: ${relPath}`));
@@ -1460,6 +1467,11 @@ export async function updateSubagents(
     const cleanRemovedSubagents: string[] = [];
 
     for (const relPath of removedSubagents) {
+      if (!isSubagentSelected(relPath, agentInstallation.installedSkills)) {
+        cleanRemovedSubagents.push(relPath);
+        continue;
+      }
+
       const previousState = previousManaged[relPath];
       let installedHash: string | null = null;
 
