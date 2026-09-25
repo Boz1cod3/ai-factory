@@ -104,6 +104,8 @@ export interface InstallOptions {
 
 export interface InstallSubagentsOptions {
   projectDir: string;
+  installedSkills: string[];
+  previousInstallation?: AgentInstallation;
   agentId?: string;
   agentsDir?: string;
   subagentsDir?: string;
@@ -599,6 +601,17 @@ export async function getAvailableSubagents(agentId: string = 'claude'): Promise
   return relPaths;
 }
 
+function isSubagentSelected(relPath: string, installedSkills: string[]): boolean {
+  return !path.posix.basename(relPath).startsWith('loop-') || installedSkills.includes('aif-loop');
+}
+
+function getTrackedBundledSubagents(agent: AgentInstallation, available: Set<string>): string[] {
+  return (agent.installedAgentFiles ?? []).filter(relPath => {
+    const source = agent.agentFileSources?.[relPath];
+    return source?.kind === 'bundled' || (!source && available.has(relPath));
+  });
+}
+
 export function buildBundledAgentFileSources(relPaths: string[]): Record<string, AgentFileSource> {
   const result: Record<string, AgentFileSource> = {};
   for (const relPath of relPaths) {
@@ -953,8 +966,21 @@ export async function installSubagents(options: InstallSubagentsOptions): Promis
     return [];
   }
   const availableSubagents = await getAvailableSubagents(agentId);
+  const selectedSubagents = availableSubagents.filter(relPath => isSubagentSelected(relPath, options.installedSkills));
 
-  if (availableSubagents.length === 0) {
+  if (options.previousInstallation) {
+    const deselected = getTrackedBundledSubagents(options.previousInstallation, new Set(availableSubagents))
+      .filter(relPath => !isSubagentSelected(relPath, options.installedSkills));
+    const removed = await removeSubagentsByName(projectDir, options.previousInstallation, deselected);
+    for (const relPath of removed) {
+      console.log(`  [${agentId}] Removed agent file: ${relPath} (aif-loop not selected)`);
+    }
+    if (removed.length !== deselected.length) {
+      throw new Error(`Could not remove deselected loop agent files for ${agentId}`);
+    }
+  }
+
+  if (selectedSubagents.length === 0) {
     return [];
   }
 
@@ -965,7 +991,7 @@ export async function installSubagents(options: InstallSubagentsOptions): Promis
   const previousManaged = options.managedAgentFiles ?? {};
   const installed: string[] = [];
 
-  for (const relPath of availableSubagents) {
+  for (const relPath of selectedSubagents) {
     const paths = resolveManagedSubagentPaths(projectDir, agentId, agentsDir, relPath);
     const targetExists = await fileExists(paths.targetFile);
 
@@ -1415,17 +1441,17 @@ export async function updateSubagents(
       entries: [],
     };
   }
-  const availableSubagents = await getAvailableSubagents(agentInstallation.id);
+  const bundledSubagents = await getAvailableSubagents(agentInstallation.id);
+  const availableSubagents = bundledSubagents.filter(relPath => isSubagentSelected(relPath, agentInstallation.installedSkills));
   const availableSet = new Set(availableSubagents);
   const previousInstalled = agentInstallation.installedAgentFiles ?? [];
   const previousInstalledSet = new Set(previousInstalled);
   const previousSources = agentInstallation.agentFileSources ?? {};
   const previousManaged = agentInstallation.managedAgentFiles ?? {};
   const entries: SubagentUpdateEntry[] = [];
-  const previousBundledInstalled = previousInstalled.filter(
-    relPath => previousSources[relPath]?.kind === 'bundled' || (!previousSources[relPath] && availableSet.has(relPath)),
-  );
-  const previousNonBundledInstalled = previousInstalled.filter(relPath => previousSources[relPath]?.kind !== 'bundled');
+  const previousBundledInstalled = getTrackedBundledSubagents(agentInstallation, new Set(bundledSubagents));
+  const previousBundledSet = new Set(previousBundledInstalled);
+  const previousNonBundledInstalled = previousInstalled.filter(relPath => !previousBundledSet.has(relPath));
 
   const removedSubagents = previousBundledInstalled.filter(
     (subagent: string) => !availableSet.has(subagent),
@@ -1458,7 +1484,7 @@ export async function updateSubagents(
         entries.push({
           subagent: relPath,
           status: 'removed',
-          reason: 'package-removed',
+          reason: isSubagentSelected(relPath, agentInstallation.installedSkills) ? 'package-removed' : 'skill-not-selected',
         });
         continue;
       }
@@ -1491,7 +1517,9 @@ export async function updateSubagents(
         entries.push({
           subagent: relPath,
           status: removedSet.has(relPath) ? 'removed' : 'skipped',
-          reason: removedSet.has(relPath) ? 'package-removed' : 'local-modifications-preserved',
+          reason: removedSet.has(relPath)
+            ? (isSubagentSelected(relPath, agentInstallation.installedSkills) ? 'package-removed' : 'skill-not-selected')
+            : 'local-modifications-preserved',
         });
       }
     }

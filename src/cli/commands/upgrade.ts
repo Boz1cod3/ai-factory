@@ -645,6 +645,8 @@ async function upgradeLocked(): Promise<void> {
     const installedAgentFiles = agent.agentsDir
       ? await installSubagents({
         projectDir,
+        installedSkills,
+        previousInstallation: agent,
         agentId: agent.id,
         agentsDir: agent.agentsDir,
         installedAgentFiles: agent.installedAgentFiles,
