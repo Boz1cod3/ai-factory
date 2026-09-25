@@ -214,8 +214,10 @@ your-project/
 ### Migration from Antigravity 1.0 (`.agent/`) and Subagents Layout
 
 When running `ai-factory upgrade`:
-- **Workflow Cleanup**: AI Factory removes legacy flat workflow files from `.agent/workflows/` only when they match canonical package skill names and pass artifact provenance checks. User-authored workflow files (including prefix-named custom workflows like `aif-team-review.md` or customized workflows) are preserved.
-- **Rules Cleanup**: Legacy rules without frontmatter triggers in `.agent/rules/` are cleaned up; user-authored rule files are preserved.
+- **Flat Workflow Staging**: Real Antigravity 1.0 installations that have only `.agent/workflows/<name>.md` (no `.agent/skills/` directories) are detected automatically. Unmodified flat workflows are staged into `.agent/skills/<name>/` with managed state before the skill target migration runs, ensuring a smooth upgrade path.
+- **Workflow Cleanup**: AI Factory removes legacy flat workflow files from `.agent/workflows/` only when they match exact historical generator output variants (full package template, simplified frontmatter, or headless). Workflows with user-modified YAML metadata (changed `description:`, added custom fields) or body edits are preserved.
+- **Cross-Agent Skill Protection**: Legacy skill directory removal verifies all files against package templates file-by-file with CRLF normalization. Skill directories belonging to other agents (e.g., `.claude/skills/qa/`) or containing user modifications or untracked files are never deleted.
+- **Rules Cleanup**: Legacy rules in `.agent/rules/` are compared against known rule templates before removal. User-modified rules are preserved with a warning.
 - **Empty Directory Cleanup**: `.agent/workflows/references/`, `.agent/workflows/`, `.agent/rules/`, and `.agent/` are removed bottom-up only when completely empty. If user files exist, the directory structure is preserved.
 - **Subagents Migration**: Any legacy `.agents/subagents/` directory on disk is migrated to `.agents/agents/` file-by-file.
   - If the destination does not exist, the file is copied and the source is removed.

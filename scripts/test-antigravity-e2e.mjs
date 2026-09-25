@@ -8,6 +8,7 @@ import {
   LEGACY_GUARDRAILS_CONTENT,
   getGuardrailsRuleContent,
   getConventionsRuleContent,
+  simplifyFrontmatter,
   isUnmodifiedPackageWorkflow,
   isUnmodifiedPackageReference,
 } from '../dist/core/transformers/antigravity.js';
@@ -17,6 +18,7 @@ const TEST_DIR = path.join(ROOT_DIR, 'temp-test-ag');
 
 const AIF_CANONICAL_CONTENT = fs.readFileSync(path.join(ROOT_DIR, 'skills', 'aif', 'SKILL.md'), 'utf8');
 const AIF_PLAN_CANONICAL_CONTENT = fs.readFileSync(path.join(ROOT_DIR, 'skills', 'aif-plan', 'SKILL.md'), 'utf8');
+const AIF_PLAN_BODY = AIF_PLAN_CANONICAL_CONTENT.replace(/^---[\s\S]*?---\n?/, '');
 const AIF_REVIEW_CANONICAL_CONTENT = fs.readFileSync(path.join(ROOT_DIR, 'skills', 'aif-review', 'SKILL.md'), 'utf8');
 const AIF_COMMIT_CANONICAL_CONTENT = fs.readFileSync(path.join(ROOT_DIR, 'skills', 'aif-commit', 'SKILL.md'), 'utf8');
 const AIF_IMPLEMENT_CANONICAL_CONTENT = fs.readFileSync(path.join(ROOT_DIR, 'skills', 'aif-implement', 'SKILL.md'), 'utf8');
@@ -200,30 +202,24 @@ try {
     safeRmSync(LEGACY_DIR);
     fs.mkdirSync(LEGACY_DIR, { recursive: true });
 
-    // Simulate Antigravity 1.0 project layout
+    // Simulate REAL Antigravity 1.0 layout: flat workflows only, NO .agent/skills/ directories
     const legacyWorkflows = path.join(LEGACY_DIR, '.agent', 'workflows');
     const legacyRules = path.join(LEGACY_DIR, '.agent', 'rules');
     fs.mkdirSync(legacyWorkflows, { recursive: true });
     fs.mkdirSync(legacyRules, { recursive: true });
 
-    fs.writeFileSync(path.join(legacyWorkflows, 'aif.md'), AIF_CANONICAL_CONTENT);
-    fs.writeFileSync(path.join(legacyWorkflows, 'aif-plan.md'), AIF_PLAN_CANONICAL_CONTENT);
+    // Write simplified-frontmatter workflows (the exact format Antigravity 1.0 produced)
+    fs.writeFileSync(path.join(legacyWorkflows, 'aif.md'), simplifyFrontmatter(AIF_CANONICAL_CONTENT));
+    fs.writeFileSync(path.join(legacyWorkflows, 'aif-plan.md'), simplifyFrontmatter(AIF_PLAN_CANONICAL_CONTENT));
     fs.writeFileSync(path.join(legacyRules, 'aif-guardrails.md'), LEGACY_GUARDRAILS_CONTENT);
 
-    await installSkills({
-      projectDir: LEGACY_DIR,
-      agentId: 'antigravity',
-      skillsDir: '.agent/skills',
-      skills: ['aif', 'aif-plan'],
-    });
-
+    // Config references .agent/skills which does NOT exist on disk (this is the real 1.0 state)
     const legacyAgent = {
       id: 'antigravity',
       skillsDir: '.agent/skills',
       installedSkills: ['aif', 'aif-plan'],
       mcp: { github: false, filesystem: false, postgres: false, chromeDevtools: false, playwright: false },
     };
-    legacyAgent.managedSkills = await buildManagedSkillsState(LEGACY_DIR, legacyAgent, legacyAgent.installedSkills);
 
     fs.writeFileSync(path.join(LEGACY_DIR, '.ai-factory.json'), JSON.stringify({
       version: '2.0.0',
@@ -991,6 +987,150 @@ try {
     safeRmSync(MODIFIED_LEGACY_DIR);
   }
 
+  // Test: upgrade does not delete custom skill directory belonging to another agent
+  console.log('\nTesting: cross-agent custom skill preservation during upgrade');
+  const CLAUDE_CUSTOM_DIR = path.join(ROOT_DIR, 'temp-test-claude-custom-skill');
+  try {
+    safeRmSync(CLAUDE_CUSTOM_DIR);
+    fs.mkdirSync(path.join(CLAUDE_CUSTOM_DIR, '.claude', 'skills', 'qa'), { recursive: true });
+    fs.writeFileSync(
+      path.join(CLAUDE_CUSTOM_DIR, '.claude', 'skills', 'qa', 'SKILL.md'),
+      '# Custom User QA Skill for Claude\n\nDo not delete me.'
+    );
+
+    // Set up an unmodified legacy package skill (.claude/skills/plan matching skills/aif-plan)
+    const pkgPlanDir = path.join(ROOT_DIR, 'skills', 'aif-plan');
+    const claudePlanDir = path.join(CLAUDE_CUSTOM_DIR, '.claude', 'skills', 'plan');
+    fs.cpSync(pkgPlanDir, claudePlanDir, {
+      recursive: true,
+      filter: (src) => !src.split(/[\\/]/).includes('tests'),
+    });
+
+    // Set up a skill that has matching SKILL.md but an extra user file in tests/
+    const claudeReviewDir = path.join(CLAUDE_CUSTOM_DIR, '.claude', 'skills', 'review');
+    fs.cpSync(path.join(ROOT_DIR, 'skills', 'aif-review'), claudeReviewDir, {
+      recursive: true,
+      filter: (src) => !src.split(/[\\/]/).includes('tests'),
+    });
+    fs.mkdirSync(path.join(claudeReviewDir, 'tests'), { recursive: true });
+    fs.writeFileSync(path.join(claudeReviewDir, 'tests', 'custom-test.sh'), '#!/bin/bash\necho custom test');
+
+    fs.writeFileSync(
+      path.join(CLAUDE_CUSTOM_DIR, '.ai-factory.json'),
+      JSON.stringify({
+        version: '2.0.0',
+        agents: [{ id: 'claude', skillsDir: '.claude/skills', installedSkills: [] }],
+        extensions: [],
+      }, null, 2)
+    );
+
+    const upgradeOutput = execSync(`node "${cliPath}" upgrade`, { cwd: CLAUDE_CUSTOM_DIR, encoding: 'utf8', stdio: 'pipe' });
+
+    assert.strictEqual(
+      fs.existsSync(path.join(CLAUDE_CUSTOM_DIR, '.claude', 'skills', 'qa', 'SKILL.md')),
+      true,
+      'Custom Claude skill .claude/skills/qa/ must survive upgrade'
+    );
+    assert.strictEqual(
+      fs.existsSync(path.join(claudeReviewDir, 'tests', 'custom-test.sh')),
+      true,
+      'Custom user file in .claude/skills/review/tests/ must survive upgrade'
+    );
+    assert.strictEqual(
+      fs.existsSync(claudePlanDir),
+      false,
+      'Unmodified legacy Claude skill .claude/skills/plan/ must be removed during upgrade'
+    );
+    assert(
+      upgradeOutput.includes('[claude] Preserved custom skill: .claude/skills/qa/'),
+      'Output must confirm custom skill preservation'
+    );
+    assert(
+      upgradeOutput.includes('[claude] Preserved custom skill: .claude/skills/review/'),
+      'Output must confirm custom skill preservation for tests/ directory'
+    );
+    assert(
+      upgradeOutput.includes('[claude] Removed legacy skill: plan/'),
+      'Output must confirm legacy skill removal'
+    );
+    console.log('✅ Cross-agent custom skill preserved (including tests/ dir) and unmodified legacy skill removed during upgrade');
+  } finally {
+    safeRmSync(CLAUDE_CUSTOM_DIR);
+  }
+
+  console.log('\nTesting: preservation of workflow with modified YAML frontmatter');
+  const YAML_MOD_DIR = path.join(ROOT_DIR, 'temp-test-yaml-mod');
+  try {
+    safeRmSync(YAML_MOD_DIR);
+    fs.mkdirSync(path.join(YAML_MOD_DIR, '.agent', 'workflows'), { recursive: true });
+
+    // User changed only description and added a custom YAML field — body is identical to template
+    const customYamlWorkflow = `---\ndescription: Custom company planning workflow\ncompany_tag: internal\n---\n\n${AIF_PLAN_BODY}`;
+    fs.writeFileSync(path.join(YAML_MOD_DIR, '.agent', 'workflows', 'aif-plan.md'), customYamlWorkflow);
+    fs.writeFileSync(path.join(YAML_MOD_DIR, '.ai-factory.json'), JSON.stringify({
+      version: '2.0.0',
+      agents: [{ id: 'antigravity', skillsDir: '.agent/skills', installedSkills: ['aif-plan'] }],
+      extensions: [],
+    }, null, 2));
+
+    const upgradeOutput = execSync(`node "${cliPath}" upgrade`, {
+      cwd: YAML_MOD_DIR, encoding: 'utf8', stdio: 'pipe',
+    });
+
+    // Negative path: modified YAML metadata MUST be preserved
+    assert.strictEqual(
+      fs.existsSync(path.join(YAML_MOD_DIR, '.agent', 'workflows', 'aif-plan.md')),
+      true,
+      'Workflow with modified YAML metadata must be preserved on disk during upgrade'
+    );
+    assert.strictEqual(
+      fs.readFileSync(path.join(YAML_MOD_DIR, '.agent', 'workflows', 'aif-plan.md'), 'utf8'),
+      customYamlWorkflow,
+      'Preserved workflow content must match original custom content exactly'
+    );
+    assert.ok(
+      upgradeOutput.includes('Preserving user-modified legacy workflow') || upgradeOutput.includes('has no verifiable baseline'),
+      'Upgrade must log preservation notice for modified workflow'
+    );
+    console.log('✅ Workflow with modified YAML frontmatter preserved during upgrade');
+  } finally {
+    safeRmSync(YAML_MOD_DIR);
+  }
+
+  console.log('\nTesting: unmodified simplified-frontmatter workflow removed during upgrade');
+  const SIMPLIFIED_DIR = path.join(ROOT_DIR, 'temp-test-simplified-wf');
+  try {
+    safeRmSync(SIMPLIFIED_DIR);
+    fs.mkdirSync(path.join(SIMPLIFIED_DIR, '.agent', 'workflows'), { recursive: true });
+
+    // Exact simplified-frontmatter format that Antigravity 1.0 produced
+    fs.writeFileSync(
+      path.join(SIMPLIFIED_DIR, '.agent', 'workflows', 'aif-plan.md'),
+      simplifyFrontmatter(AIF_PLAN_CANONICAL_CONTENT)
+    );
+    fs.writeFileSync(path.join(SIMPLIFIED_DIR, '.ai-factory.json'), JSON.stringify({
+      version: '2.0.0',
+      agents: [{ id: 'antigravity', skillsDir: '.agent/skills', installedSkills: ['aif-plan'] }],
+      extensions: [],
+    }, null, 2));
+
+    execSync(`node "${cliPath}" upgrade`, { cwd: SIMPLIFIED_DIR, encoding: 'utf8', stdio: 'pipe' });
+
+    // Positive path: unmodified legacy workflow MUST be cleaned up / migrated
+    assert.strictEqual(
+      fs.existsSync(path.join(SIMPLIFIED_DIR, '.agent', 'workflows', 'aif-plan.md')),
+      false,
+      'Unmodified simplified-frontmatter workflow must be removed during upgrade'
+    );
+    assert.strictEqual(
+      fs.existsSync(path.join(SIMPLIFIED_DIR, '.agents', 'skills', 'aif-plan', 'SKILL.md')),
+      true,
+      'Unmodified workflow must be migrated to .agents/skills/aif-plan/SKILL.md'
+    );
+    console.log('✅ Unmodified simplified-frontmatter workflow correctly removed and migrated');
+  } finally {
+    safeRmSync(SIMPLIFIED_DIR);
+  }
 
   console.log('\n✅ ALL ANTIGRAVITY 2.0 CHECKS PASSED SUCCESSFULLY!\n');
 } finally {

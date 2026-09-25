@@ -1,7 +1,7 @@
 import chalk from 'chalk';
 import fs from 'fs-extra';
 import path from 'path';
-import { loadConfig, saveConfig, getCurrentVersion } from '../../core/config.js';
+import { loadConfig, saveConfig, getCurrentVersion, type AiFactoryConfig as Config } from '../../core/config.js';
 import {
   buildManagedConfigFilesState,
   buildManagedSkillsState,
@@ -9,6 +9,7 @@ import {
   installConfigFiles,
   installSkills,
   installSubagents,
+  renderSkillFiles,
   getAvailableSkills,
   partitionSkills,
 } from '../../core/installer.js';
@@ -23,6 +24,7 @@ import {
   readTextFile,
   readFileBuffer,
   removeEmptyDirBottomUp,
+  getSkillsDir,
 } from '../../utils/fs.js';
 import {
   isAiFactoryWorkflowArtifact,
@@ -34,7 +36,7 @@ import {
   getConventionsRuleContent,
   LEGACY_GUARDRAILS_CONTENT,
 } from '../../core/transformers/antigravity.js';
-import { resolveSkillTargets } from '../../core/skill-targets.js';
+import { resolveSkillTargets, createSkillRenderContext } from '../../core/skill-targets.js';
 import { prepareSkillTargets, recoverSkillMigration, withSkillProjectLock } from '../../core/skills-migration.js';
 import { collectReplacedSkills, composeInstalledExtensionSkills } from '../../core/extension-ops.js';
 
@@ -201,6 +203,166 @@ async function removeWorkflowFile(projectDir: string, configDir: string, skillNa
   return false;
 }
 
+const SKILL_INTERNAL_TOP_LEVEL_DIRS = new Set(['tests']);
+
+function isSkillInternalDir(skillRootDir: string, candidate: string): boolean {
+  const rel = path.relative(skillRootDir, candidate);
+  if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) {
+    return false;
+  }
+  const top = rel.split(/[\\/]/)[0];
+  return SKILL_INTERNAL_TOP_LEVEL_DIRS.has(top);
+}
+
+export async function isUnmodifiedLegacySkillDir(oldDir: string, skillName: string): Promise<boolean> {
+  const stat = await fs.stat(oldDir).catch(() => null);
+  if (!stat || !stat.isDirectory()) return false;
+
+  // If no SKILL.md exists, this is not a standard AI Factory skill directory — preserve it
+  const skillFile = path.join(oldDir, 'SKILL.md');
+  if (!(await fileExists(skillFile))) return false;
+
+  // Map legacy bare names to canonical aif-* skill names
+  let canonicalSkill = skillName;
+  if (canonicalSkill === 'aif' || canonicalSkill === 'ai-factory') {
+    canonicalSkill = 'aif';
+  } else if (
+    canonicalSkill === 'feature' ||
+    canonicalSkill === 'ai-factory-feature' ||
+    canonicalSkill === 'aif-feature'
+  ) {
+    canonicalSkill = 'aif-plan';
+  } else if (
+    canonicalSkill === 'task' ||
+    canonicalSkill === 'ai-factory-task' ||
+    canonicalSkill === 'aif-task'
+  ) {
+    canonicalSkill = 'aif-implement';
+  } else if (canonicalSkill.startsWith('ai-factory-')) {
+    canonicalSkill = canonicalSkill.replace(/^ai-factory-/, 'aif-');
+  } else if (!canonicalSkill.startsWith('aif-')) {
+    canonicalSkill = `aif-${canonicalSkill}`;
+  }
+
+  const pkgSkillDir = path.join(getSkillsDir(), canonicalSkill);
+  if (!(await fileExists(pkgSkillDir))) return false;
+
+  // Compare every local file against its package counterpart
+  const localFiles = await listFilesRecursive(oldDir);
+  for (const absLocal of localFiles) {
+    const relFile = path.relative(oldDir, absLocal).replaceAll('\\', '/');
+    if (isSkillInternalDir(oldDir, absLocal)) {
+      // User created files in tests/ or other non-distributed directories -> preserve
+      return false;
+    }
+    const pkgFile = path.join(pkgSkillDir, relFile);
+    if (!(await fileExists(pkgFile))) {
+      // Untracked or extra user file inside skill directory -> preserve
+      return false;
+    }
+    const localContent = await readTextFile(absLocal);
+    const pkgContent = await readTextFile(pkgFile);
+    if (localContent === null || pkgContent === null) return false;
+    if (localContent.replace(/\r\n/g, '\n').trim() !== pkgContent.replace(/\r\n/g, '\n').trim()) {
+      return false;
+    }
+  }
+
+  // Symmetric check: verify all package files exist in oldDir (skipping internal test dirs)
+  const pkgFiles = await listFilesRecursive(pkgSkillDir, {
+    skipDirectory: absPath => isSkillInternalDir(pkgSkillDir, absPath),
+  });
+  for (const absPkg of pkgFiles) {
+    const relFile = path.relative(pkgSkillDir, absPkg).replaceAll('\\', '/');
+    const localFile = path.join(oldDir, relFile);
+    if (!(await fileExists(localFile))) {
+      // Missing a package file inside legacy skill directory -> customized/partial -> preserve
+      return false;
+    }
+  }
+
+  return true;
+}
+
+export async function migrateLegacyAntigravityFlatWorkflows(
+  projectDir: string,
+  config: Config,
+): Promise<boolean> {
+  const agAgent = config.agents.find(a => a.id === 'antigravity');
+  if (!agAgent || agAgent.skillsDir.replaceAll('\\', '/').replace(/\/$/, '') !== '.agent/skills') return false;
+
+  const workflowsDir = path.join(projectDir, '.agent', 'workflows');
+  if (!(await fileExists(workflowsDir))) return false;
+
+  let modifiedConfig = false;
+  agAgent.managedSkills ??= {};
+
+  for (const skillName of [...agAgent.installedSkills]) {
+    const targetDir = path.join(projectDir, agAgent.skillsDir, skillName);
+    if (await fileExists(targetDir)) continue;
+
+    // Search for flat workflow file in .agent/workflows/ with all historical naming variants
+    const candidateFiles = [
+      `${skillName}.md`,                                       // aif-plan.md
+      `ai-factory.${skillName}.md`,                            // ai-factory.aif-plan.md
+      `${skillName.replace(/^aif-/, '')}.md`,                  // plan.md
+      `ai-factory.${skillName.replace(/^aif-/, '')}.md`,       // ai-factory.plan.md
+      `ai-factory-${skillName.replace(/^aif-/, '')}.md`,       // ai-factory-plan.md
+    ];
+    if (skillName === 'aif') {
+      candidateFiles.push('ai-factory.md');
+    }
+
+    let matchedFile: string | null = null;
+
+    for (const cand of candidateFiles) {
+      const p = path.join(workflowsDir, cand);
+      if (await fileExists(p)) {
+        const c = await readTextFile(p);
+        if (c !== null && (await isUnmodifiedPackageWorkflow(c, cand))) {
+          matchedFile = p;
+          break;
+        }
+      }
+    }
+
+    if (matchedFile) {
+      // Stage the canonical package skill into .agent/skills/<name>/ so prepareSkillTargets
+      // finds a valid baseline directory with provable managed state
+      const pkgDir = path.join(getSkillsDir(), skillName);
+      if (await fileExists(pkgDir)) {
+        await ensureDir(targetDir);
+        const context = createSkillRenderContext(agAgent.id, agAgent.skillsDir);
+        const rendered = await renderSkillFiles(pkgDir, skillName, agAgent.id, context);
+        for (const [relPath, bytes] of rendered) {
+          const destPath = path.join(targetDir, relPath);
+          await ensureDir(path.dirname(destPath));
+          await fs.writeFile(destPath, bytes);
+        }
+        const state = (await buildManagedSkillsState(projectDir, agAgent, [skillName]))[skillName];
+        if (state) {
+          agAgent.managedSkills[skillName] = state;
+          modifiedConfig = true;
+        }
+        await removeFile(matchedFile);
+        console.log(chalk.dim(`  [antigravity] Staged legacy workflow ${path.basename(matchedFile)} → .agent/skills/${skillName}/ for migration`));
+      }
+    } else {
+      // No unmodified flat workflow exists for this skill — the user may have deleted or
+      // heavily customized it. Remove from installedSkills so preflight does not abort,
+      // but preserve any user files in .agent/workflows/
+      agAgent.installedSkills = agAgent.installedSkills.filter(s => s !== skillName);
+      modifiedConfig = true;
+      console.log(chalk.yellow(`  [antigravity] Skill "${skillName}" has no verifiable baseline; removed from installed list`));
+    }
+  }
+
+  if (modifiedConfig) {
+    await saveConfig(projectDir, config);
+  }
+  return modifiedConfig;
+}
+
 interface LegacySkillRemovalOptions {
   projectDir: string;
   configDir: string;
@@ -221,9 +383,13 @@ async function removeLegacySkillArtifacts(options: LegacySkillRemovalOptions): P
 
   const oldDir = path.join(skillsDir, skillName);
   if (await fileExists(oldDir)) {
-    await removeDirectory(oldDir);
-    console.log(chalk.yellow(`  [${agentId}] Removed skill: ${skillName}/`));
-    removedCount++;
+    if (await isUnmodifiedLegacySkillDir(oldDir, skillName)) {
+      await removeDirectory(oldDir);
+      console.log(chalk.yellow(`  [${agentId}] Removed legacy skill: ${skillName}/`));
+      removedCount++;
+    } else {
+      console.log(chalk.yellow(`  [${agentId}] Preserved custom skill: ${path.relative(projectDir, oldDir).replaceAll('\\', '/')}/`));
+    }
   }
 
   return removedCount;
@@ -257,6 +423,12 @@ async function upgradeLocked(): Promise<void> {
   });
   await recoverSkillMigration(projectDir);
   config = (await loadConfig(projectDir))!;
+
+  // Stage flat legacy Antigravity 1.0 workflows into skill directories
+  // so prepareSkillTargets() finds a valid baseline. Must run BEFORE resolveSkillTargets().
+  await migrateLegacyAntigravityFlatWorkflows(projectDir, config);
+  config = (await loadConfig(projectDir))!;
+
   const oldSkillRoots = new Map(config.agents.map(agent => [agent.id, agent.skillsDir]));
   const groups = await resolveSkillTargets(projectDir, config.agents);
   const availableSkills = await getAvailableSkills();

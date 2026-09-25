@@ -1,4 +1,5 @@
 import type { AgentTransformer, TransformResult } from '../transformer.js';
+import { removeFrontmatter, replaceFrontmatterName } from '../transformer.js';
 import chalk from 'chalk';
 import path from 'path';
 import fs from 'fs-extra';
@@ -111,15 +112,31 @@ export function isAiFactoryWorkflowArtifact(content: string, fileName?: string):
   return false;
 }
 
+/**
+ * Reproduces the exact historical Antigravity 1.0 frontmatter simplification.
+ * Keeps only the `description:` field. Used exclusively for legacy provenance matching.
+ */
+export function simplifyFrontmatter(content: string): string {
+  const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
+  if (!fmMatch) return content;
+
+  const frontmatter = fmMatch[1];
+  const descMatch = frontmatter.match(/^description:\s*(.+)$/m);
+  if (!descMatch) return content;
+
+  const newFrontmatter = `---\ndescription: ${descMatch[1].trim()}\n---`;
+  return content.replace(/^---\n[\s\S]*?\n---/, newFrontmatter);
+}
+
 export async function isUnmodifiedPackageWorkflow(content: string, fileName: string): Promise<boolean> {
   const normalizedContent = content.replace(/\r\n/g, '\n').trim();
   const baseName = path.basename(fileName).replace(/\.md$/, '');
   let canonicalSkill: string;
   if (baseName === 'aif') {
     canonicalSkill = 'aif';
-  } else if (baseName === 'feature' || baseName === 'ai-factory-feature') {
+  } else if (baseName === 'feature' || baseName === 'ai-factory-feature' || baseName === 'aif-feature') {
     canonicalSkill = 'aif-plan';
-  } else if (baseName === 'task' || baseName === 'ai-factory-task') {
+  } else if (baseName === 'task' || baseName === 'ai-factory-task' || baseName === 'aif-task') {
     canonicalSkill = 'aif-implement';
   } else if (baseName.startsWith('aif-')) {
     canonicalSkill = baseName;
@@ -140,22 +157,37 @@ export async function isUnmodifiedPackageWorkflow(content: string, fileName: str
   }
 
   const normalizedTemplate = templateContent.replace(/\r\n/g, '\n').trim();
+
+  // Variant 1: Exact match with full package template
   if (normalizedContent === normalizedTemplate) {
     return true;
   }
 
-  const stripFrontmatter = (text: string): string => {
-    const match = text.match(/^---[^\n]*\n[\s\S]*?\n---[^\n]*\n?/);
-    if (match) {
-      return text.slice(match[0].length).trim();
-    }
-    return text.trim();
-  };
+  // Variant 2: Historical simplified frontmatter (Antigravity 1.0 transformer output)
+  const simplifiedTemplate = simplifyFrontmatter(normalizedTemplate).replace(/\r\n/g, '\n').trim();
+  if (normalizedContent === simplifiedTemplate) {
+    return true;
+  }
 
-  const contentBody = stripFrontmatter(normalizedContent);
-  const templateBody = stripFrontmatter(normalizedTemplate);
+  // Variant 3: Frontmatter stripped completely (documented legacy headless variant)
+  const strippedTemplate = removeFrontmatter(normalizedTemplate).replace(/\r\n/g, '\n').trim();
+  if (strippedTemplate.length > 0 && normalizedContent === strippedTemplate) {
+    return true;
+  }
 
-  return templateBody.length > 0 && contentBody === templateBody;
+  // Variant 4: Historical name-replaced variant (e.g. name: plan instead of name: aif-plan)
+  const replacedNameTemplate = replaceFrontmatterName(normalizedTemplate, baseName).replace(/\r\n/g, '\n').trim();
+  if (normalizedContent === replacedNameTemplate) {
+    return true;
+  }
+
+  // Variant 5: Simplified frontmatter + name-replaced combination
+  const replacedSimplified = simplifyFrontmatter(replacedNameTemplate).replace(/\r\n/g, '\n').trim();
+  if (normalizedContent === replacedSimplified) {
+    return true;
+  }
+
+  return false;
 }
 
 export async function getPackageReferencePath(fileName: string): Promise<string | null> {
