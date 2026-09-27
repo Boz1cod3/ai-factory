@@ -119,6 +119,8 @@ try {
   for (const [from, to] of [
     ['universal', 'universal,codex-app'], ['codex-app', 'universal,codex-app'],
     ['universal,codex-app', 'universal'], ['universal,codex-app', 'codex-app'],
+    ['universal', 'universal,codex'], ['universal', 'codex,universal'],
+    ['universal', 'universal,codex-app,codex'],
   ]) {
     const project = mkdtempSync(path.join(temp, 'registered-custom-'));
     cli(project, 'init', '--agents', from, '--skills', 'aif');
@@ -135,10 +137,14 @@ try {
     writeFileSync(configPath, JSON.stringify(config));
     const before = snapshot(path.join(project, '.agents/skills/custom'));
     const flatBefore = snapshot(path.join(project, '.agents/skills/local-helper'));
+    if (from === 'universal') assert.equal(existsSync(path.join(project, '.codex')), false, 'New Codex runtime must have no source directory');
     cli(project, 'init', '--agents', to, '--skills', 'aif');
     assert.deepEqual(snapshot(path.join(project, '.agents/skills/custom')), before, `${from} -> ${to}: custom skills must remain unchanged`);
     assert.deepEqual(snapshot(path.join(project, '.agents/skills/local-helper')), flatBefore);
     const saved = JSON.parse(readFileSync(configPath));
+    assert.deepEqual(saved.agents.map(agent => agent.id), to.split(','));
+    assert.ok(saved.agents.every(agent => agent.skillsDir === '.agents/skills'));
+    for (const agent of saved.agents) assert.deepEqual(agent.managedSkills, saved.agents[0].managedSkills);
     for (const agent of saved.agents.filter(agent => from.split(',').includes(agent.id))) {
       assert.ok(agent.installedSkills.includes('custom/local-helper'));
       assert.ok(agent.installedSkills.includes('custom/aif'));
@@ -149,12 +155,15 @@ try {
     console.log(`PASS registered custom skills: ${from} -> ${to}`);
   }
 
-  for (const scenario of ['local-edit', 'missing-baseline', 'unknown-managed-source', 'physical-move']) {
+  for (const scenario of ['local-edit', 'missing-baseline', 'unknown-managed-source', 'physical-move', 'existing-codex-source', 'installed-codex-source']) {
     const project = mkdtempSync(path.join(temp, 'custom-guards-'));
     cli(project, 'init', '--agents', 'universal', '--skills', 'aif');
     const config = JSON.parse(readFileSync(path.join(project, '.ai-factory.json')));
     const agent = config.agents[0];
     agent.installedSkills.push('custom/local-helper');
+    const custom = path.join(project, '.agents/skills/custom/local-helper');
+    mkdirSync(custom, { recursive: true });
+    writeFileSync(path.join(custom, 'SKILL.md'), 'Project-owned custom skill\n');
     const skill = path.join(project, '.agents/skills/aif/SKILL.md');
     let expected;
     if (scenario === 'local-edit') {
@@ -169,13 +178,20 @@ try {
       expected = /Unknown source for "missing-managed"/;
     } else {
       expected = /Unknown source for "local-helper"/;
+      if (scenario === 'existing-codex-source') {
+        const source = path.join(project, '.codex/skills/local-helper');
+        mkdirSync(source, { recursive: true });
+        writeFileSync(path.join(source, 'SKILL.md'), 'Existing Codex source content\n');
+      } else if (scenario === 'installed-codex-source') {
+        config.agents.push({ ...agent, id: 'codex', skillsDir: '.codex/skills', installedSkills: [], managedSkills: {} });
+      }
     }
     const groups = await resolveSkillTargets(project, scenario === 'physical-move'
       ? [{ id: 'universal', skillsDir: '.other/skills' }]
-      : [{ id: 'universal', skillsDir: '.agents/skills' }, { id: 'codex-app', skillsDir: '.agents/skills' }]);
-    const before = snapshot(path.join(project, '.agents/skills'));
+      : [{ id: 'universal', skillsDir: '.agents/skills' }, { id: 'codex', skillsDir: '.codex/skills' }]);
+    const before = snapshot(project);
     await assert.rejects(preflightSkillMigration(project, config, groups), expected);
-    assert.deepEqual(snapshot(path.join(project, '.agents/skills')), before, 'Rejected preflight must not mutate skills');
+    assert.deepEqual(snapshot(project), before, 'Rejected preflight must not mutate source skills, destination skills, or config');
     console.log(`PASS managed migration guard: ${scenario}`);
   }
 

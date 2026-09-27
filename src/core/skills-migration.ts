@@ -257,8 +257,18 @@ export async function preflightSkillMigration(
     if (!needsMigration) continue;
     for (const agent of participants) provenRoots.set(agent.skillsDir, await physicalProjectPath(projectDir, agent.skillsDir));
     provenRoots.set(group.skillsDir, await physicalProjectPath(projectDir, group.skillsDir));
-    const profileOnly = group.targets.every(target => target.sourcePhysicalPath === group.physicalPath)
-      && participants.every(agent => provenRoots.get(agent.skillsDir) === group.physicalPath);
+    let profileOnly = participants.every(agent => provenRoots.get(agent.skillsDir) === group.physicalPath);
+    for (const target of group.targets) {
+      if (!profileOnly || target.sourcePhysicalPath === group.physicalPath) continue;
+      // A new runtime's absent default directory is not installed data to move.
+      // Existing participants and existing source paths retain migration guards.
+      const installed = participants.some(agent => agent.id === target.id);
+      const sourceExists = installed || await fs.lstat(target.sourcePhysicalPath).then(() => true, error => {
+        if (error.code === 'ENOENT') return false;
+        throw error;
+      });
+      if (sourceExists) profileOnly = false;
+    }
     const names = new Set<string>();
     for (const agent of participants) {
       for (const installed of agent.installedSkills) {
