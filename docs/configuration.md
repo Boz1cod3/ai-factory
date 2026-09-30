@@ -163,7 +163,7 @@ The presence of `.codex/` does not override an existing `.agents/` directory. An
 
 CLI and app can use one physical skill directory. AI Factory installs their combined required skill set once, while retaining each runtime's selections and results. Shared content uses `$aif-*`, the effective skill path, `.codex` configuration paths, and a common Codex rendering profile. A singleton keeps its own runtime metadata; sharing does not change either runtime's MCP capabilities.
 
-Custom project paths affect project-local helper references. Home-scope references keep the runtime's normal home skill directory; a project override is not treated as a home override. CLI and app sharing a custom target use the common Codex home profile (`~/.codex/skills`); a singleton app keeps `~/.agents/skills`. Incompatible renderers, including Codex and Universal, cannot share a physical directory. Nested targets, paths outside the project, unsafe links, and overlaps with native files or migration state are rejected before installed-file changes.
+Custom project paths affect project-local helper references. Home-scope references keep the runtime's normal home skill directory; a project override is not treated as a home override. CLI and app sharing a custom target use the common Codex home profile (`~/.codex/skills`); a singleton app keeps `~/.agents/skills`. Universal can share a physical skill directory with Codex CLI or Codex app using the common Codex rendering profile and `$aif-*` examples. Universal in its own directory keeps its default profile. Other incompatible renderers cannot share a physical directory. Nested targets, paths outside the project, unsafe links, and overlaps with native files or migration state are rejected before installed-file changes.
 
 Only skills move. `.codex/agents/`, `.codex/config.toml`, custom native files, and their ownership records stay in place during migration. Later native updates run separately. Removing one runtime preserves skills required by the survivor and preserves `.codex/config.toml` while another runtime still uses it. Moving skills does not guarantee that Codex context-budget warnings disappear.
 
@@ -294,6 +294,9 @@ warmup:
 
 # Workflow Settings
 workflow:
+  explore_mode: regular            # regular | ultra; explicit mode wins
+  plan_mode: ask                   # ask | fast | full | ultra; explicit mode wins
+  improve_check: false             # true enables +check; --no-check overrides once
   auto_create_dirs: true           # Create .ai-factory/ directories when missing
   plan_id_format: slug             # full filename / ultra directory ID: slug | sequential
   analyze_updates_architecture: true
@@ -316,6 +319,12 @@ rules:
   # backend: .ai-factory/rules/backend.md
   # database: .ai-factory/rules/database.md
 ```
+
+For repeated command options, set `workflow.explore_mode: ultra`,
+`workflow.plan_mode: full`, or `workflow.improve_check: true`. Explicit command
+arguments override these defaults; absent settings preserve existing behavior.
+See [Command defaults](config-reference.md#command-defaults) for precedence and
+one-invocation overrides.
 
 **Current config-aware skills** read `config.yaml` at Step 0. This currently includes:
 - Core workflow and quality commands: `/aif`, `/aif-plan`, `/aif-implement`, `/aif-verify`, `/aif-commit`, `/aif-review`, `/aif-rules-check`, `/aif-roadmap`, `/aif-explore`, `/aif-loop`, `/aif-rules`, `/aif-warmup`
