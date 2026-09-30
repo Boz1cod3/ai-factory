@@ -164,3 +164,21 @@ export async function hasSurvivingConfigConsumer(
   }
   return false;
 }
+
+export async function hasSurvivingAgentFileConsumer(
+  projectDir: string,
+  relativePath: string,
+  survivors: readonly SkillTargetRuntime[],
+): Promise<boolean> {
+  const target = await physicalProjectPath(projectDir, relativePath);
+  for (const survivor of survivors) {
+    const runtime = getAgentConfig(survivor.id);
+    const agentsDir = survivor.agentsDir ?? runtime.agentsDir;
+    if (!agentsDir) continue;
+    const installedAgentFiles = survivor.installedAgentFiles ?? [];
+    for (const relPath of installedAgentFiles) {
+      if ((await physicalProjectPath(projectDir, path.join(agentsDir, relPath))) === target) return true;
+    }
+  }
+  return false;
+}

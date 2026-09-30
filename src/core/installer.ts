@@ -220,7 +220,7 @@ async function hashManagedDirectory(dirPath: string, raw = false): Promise<strin
   return hashManagedFiles(mapped, raw);
 }
 
-async function hashManagedFile(filePath: string, relPath: string): Promise<string | null> {
+export async function hashManagedFile(filePath: string, relPath: string): Promise<string | null> {
   return hashManagedFiles([{ absPath: filePath, relPath }]);
 }
 
@@ -972,14 +972,59 @@ export async function installSubagents(options: InstallSubagentsOptions): Promis
   const selectedSubagents = availableSubagents.filter(relPath => isSubagentSelected(relPath, options.installedSkills));
 
   if (options.previousInstallation) {
-    const deselected = getTrackedBundledSubagents(options.previousInstallation, new Set(availableSubagents))
+    const candidateDeselected = getTrackedBundledSubagents(options.previousInstallation, new Set(availableSubagents))
       .filter(relPath => !isSubagentSelected(relPath, options.installedSkills));
-    const removed = await removeSubagentsByName(projectDir, options.previousInstallation, deselected);
-    for (const relPath of removed) {
-      console.log(`  [${agentId}] Removed agent file: ${relPath} (aif-loop not selected)`);
+
+    const cleanDeselected: string[] = [];
+    const previousManaged = options.managedAgentFiles ?? options.previousInstallation.managedAgentFiles ?? {};
+    const effectiveAgentsDir = options.previousInstallation.agentsDir ?? agentsDir;
+
+    for (const relPath of candidateDeselected) {
+      try {
+        const paths = resolveManagedSubagentPaths(projectDir, agentId, effectiveAgentsDir, relPath);
+        const targetExists = await fileExists(paths.targetFile);
+        if (!targetExists) continue;
+
+        const installedHash = await hashManagedFile(paths.targetFile, relPath);
+        const previousState = previousManaged[relPath];
+
+        if (
+          previousState &&
+          installedHash &&
+          previousState.installedHash === installedHash &&
+          previousState.sourceHash === previousState.installedHash
+        ) {
+          cleanDeselected.push(relPath);
+        } else {
+          console.warn(
+            chalk.yellow(
+              `  [${agentId}] Preserved modified agent file: ${relPath} (aif-loop deselected, local modifications preserved)`,
+            ),
+          );
+        }
+      } catch (error) {
+        console.warn(
+          chalk.yellow(
+            `  [${agentId}] Preserved agent file with unverified path "${relPath}": ${(error as Error).message}`,
+          ),
+        );
+      }
     }
-    if (removed.length !== deselected.length) {
-      throw new Error(`Could not remove deselected loop agent files for ${agentId}`);
+
+    if (cleanDeselected.length > 0) {
+      const removed = await removeSubagentsByName(projectDir, options.previousInstallation, cleanDeselected);
+      const removedSet = new Set(removed);
+      for (const relPath of cleanDeselected) {
+        if (removedSet.has(relPath)) {
+          console.log(`  [${agentId}] Removed agent file: ${relPath} (aif-loop not selected)`);
+        } else {
+          console.warn(
+            chalk.yellow(
+              `  [${agentId}] Could not remove deselected loop agent file: ${relPath}`,
+            ),
+          );
+        }
+      }
     }
   }
 

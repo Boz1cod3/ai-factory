@@ -29,6 +29,7 @@ export interface SkillTargetRuntime {
   skillsDir: string;
   agentsDir?: string;
   configFiles?: string[];
+  installedAgentFiles?: string[];
 }
 
 export const WORKFLOW_SKILLS = new Set([

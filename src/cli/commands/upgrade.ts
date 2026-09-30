@@ -13,7 +13,9 @@ import {
   getAvailableSkills,
   partitionSkills,
 } from '../../core/installer.js';
-import { getAgentConfig, hydrateProjectAgentRegistry } from '../../core/agents.js';
+import { getAgentConfig, getAvailableAgentIds, hydrateProjectAgentRegistry } from '../../core/agents.js';
+import { processTemplate, buildTemplateVars, type TemplateVars } from '../../core/template.js';
+import { replaceFrontmatterName } from '../../core/transformer.js';
 import {
   fileExists,
   removeDirectory,
@@ -247,6 +249,21 @@ export async function isUnmodifiedLegacySkillDir(oldDir: string, skillName: stri
   const pkgSkillDir = path.join(getSkillsDir(), canonicalSkill);
   if (!(await fileExists(pkgSkillDir))) return false;
 
+  // Gather template variable sets across available agents + legacy agent vars
+  const varsList: TemplateVars[] = getAvailableAgentIds().map(id => {
+    try { return buildTemplateVars(getAgentConfig(id)); } catch { return null; }
+  }).filter((v): v is TemplateVars => v !== null);
+
+  // Also add legacy Antigravity 1.0 vars
+  varsList.push({
+    config_dir: '.agent',
+    skills_dir: '.agent/skills',
+    home_skills_dir: '~/.agent/skills',
+    settings_file: '',
+    agent_name: 'Antigravity',
+    skills_cli_agent_flag: '--agent antigravity',
+  });
+
   // Compare every local file against its package counterpart
   const localFiles = await listFilesRecursive(oldDir);
   for (const absLocal of localFiles) {
@@ -263,9 +280,53 @@ export async function isUnmodifiedLegacySkillDir(oldDir: string, skillName: stri
     const localContent = await readTextFile(absLocal);
     const pkgContent = await readTextFile(pkgFile);
     if (localContent === null || pkgContent === null) return false;
-    if (localContent.replace(/\r\n/g, '\n').trim() !== pkgContent.replace(/\r\n/g, '\n').trim()) {
-      return false;
+    const normLocal = localContent.replace(/\r\n/g, '\n').trim();
+    const normPkg = pkgContent.replace(/\r\n/g, '\n').trim();
+
+    if (normLocal === normPkg) continue;
+
+    // Check if this is a markdown file that had template variables or frontmatter name replaced
+    if (relFile.endsWith('.md')) {
+      const candidates = new Set<string>();
+      candidates.add(normPkg);
+
+      // Only SKILL.md has its frontmatter name replaced during installation
+      if (relFile === 'SKILL.md') {
+        const nameVariants = new Set<string>();
+        nameVariants.add(skillName);
+        nameVariants.add(canonicalSkill);
+        nameVariants.add(skillName.replace(/^(ai-factory-|aif-)/, ''));
+        nameVariants.add(canonicalSkill.replace(/^aif-/, ''));
+        if (canonicalSkill === 'aif-plan') {
+          nameVariants.add('feature');
+          nameVariants.add('plan');
+        } else if (canonicalSkill === 'aif-implement') {
+          nameVariants.add('task');
+          nameVariants.add('implement');
+        }
+        for (const name of nameVariants) {
+          candidates.add(replaceFrontmatterName(normPkg, name).replace(/\r\n/g, '\n').trim());
+        }
+      }
+
+      if (candidates.has(normLocal)) continue;
+
+      let matched = false;
+      for (const candidate of candidates) {
+        for (const vars of varsList) {
+          const templated = processTemplate(candidate, vars).replace(/\r\n/g, '\n').trim();
+          if (normLocal === templated) {
+            matched = true;
+            break;
+          }
+        }
+        if (matched) break;
+      }
+
+      if (matched) continue;
     }
+
+    return false;
   }
 
   // Symmetric check: verify all package files exist in oldDir (skipping internal test dirs)

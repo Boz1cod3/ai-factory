@@ -1,5 +1,6 @@
 import type { AgentTransformer, TransformResult } from '../transformer.js';
 import { removeFrontmatter, replaceFrontmatterName } from '../transformer.js';
+import { processTemplate, type TemplateVars } from '../template.js';
 import chalk from 'chalk';
 import path from 'path';
 import fs from 'fs-extra';
@@ -128,6 +129,36 @@ export function simplifyFrontmatter(content: string): string {
   return content.replace(/^---\n[\s\S]*?\n---/, newFrontmatter);
 }
 
+export function simplifyFrontmatterWithNameAndDesc(content: string, name: string): string {
+  const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
+  if (!fmMatch) return content;
+
+  const frontmatter = fmMatch[1];
+  const descMatch = frontmatter.match(/^description:\s*(.+)$/m);
+  if (!descMatch) return content;
+
+  const newFrontmatter = `---\nname: ${name}\ndescription: ${descMatch[1].trim()}\n---`;
+  return content.replace(/^---\n[\s\S]*?\n---/, newFrontmatter);
+}
+
+const LEGACY_AG_VARS: TemplateVars = {
+  config_dir: '.agent',
+  skills_dir: '.agent/skills',
+  home_skills_dir: '~/.agent/skills',
+  settings_file: '',
+  agent_name: 'Antigravity',
+  skills_cli_agent_flag: '--agent antigravity',
+};
+
+const MODERN_AG_VARS: TemplateVars = {
+  config_dir: '.agents',
+  skills_dir: '.agents/skills',
+  home_skills_dir: '~/.agents/skills',
+  settings_file: '.agents/mcp_config.json',
+  agent_name: 'Antigravity',
+  skills_cli_agent_flag: '--agent antigravity',
+};
+
 export async function isUnmodifiedPackageWorkflow(content: string, fileName: string): Promise<boolean> {
   const normalizedContent = content.replace(/\r\n/g, '\n').trim();
   const baseName = path.basename(fileName).replace(/\.md$/, '');
@@ -158,36 +189,24 @@ export async function isUnmodifiedPackageWorkflow(content: string, fileName: str
 
   const normalizedTemplate = templateContent.replace(/\r\n/g, '\n').trim();
 
-  // Variant 1: Exact match with full package template
-  if (normalizedContent === normalizedTemplate) {
-    return true;
+  const baseVariants = [
+    normalizedTemplate,
+    simplifyFrontmatter(normalizedTemplate).replace(/\r\n/g, '\n').trim(),
+    simplifyFrontmatterWithNameAndDesc(normalizedTemplate, baseName).replace(/\r\n/g, '\n').trim(),
+    simplifyFrontmatterWithNameAndDesc(normalizedTemplate, canonicalSkill).replace(/\r\n/g, '\n').trim(),
+    removeFrontmatter(normalizedTemplate).replace(/\r\n/g, '\n').trim(),
+    replaceFrontmatterName(normalizedTemplate, baseName).replace(/\r\n/g, '\n').trim(),
+    simplifyFrontmatter(replaceFrontmatterName(normalizedTemplate, baseName)).replace(/\r\n/g, '\n').trim(),
+  ].filter(v => v.length > 0);
+
+  const candidateVariants = new Set<string>();
+  for (const variant of baseVariants) {
+    candidateVariants.add(variant);
+    candidateVariants.add(processTemplate(variant, LEGACY_AG_VARS).replace(/\r\n/g, '\n').trim());
+    candidateVariants.add(processTemplate(variant, MODERN_AG_VARS).replace(/\r\n/g, '\n').trim());
   }
 
-  // Variant 2: Historical simplified frontmatter (Antigravity 1.0 transformer output)
-  const simplifiedTemplate = simplifyFrontmatter(normalizedTemplate).replace(/\r\n/g, '\n').trim();
-  if (normalizedContent === simplifiedTemplate) {
-    return true;
-  }
-
-  // Variant 3: Frontmatter stripped completely (documented legacy headless variant)
-  const strippedTemplate = removeFrontmatter(normalizedTemplate).replace(/\r\n/g, '\n').trim();
-  if (strippedTemplate.length > 0 && normalizedContent === strippedTemplate) {
-    return true;
-  }
-
-  // Variant 4: Historical name-replaced variant (e.g. name: plan instead of name: aif-plan)
-  const replacedNameTemplate = replaceFrontmatterName(normalizedTemplate, baseName).replace(/\r\n/g, '\n').trim();
-  if (normalizedContent === replacedNameTemplate) {
-    return true;
-  }
-
-  // Variant 5: Simplified frontmatter + name-replaced combination
-  const replacedSimplified = simplifyFrontmatter(replacedNameTemplate).replace(/\r\n/g, '\n').trim();
-  if (normalizedContent === replacedSimplified) {
-    return true;
-  }
-
-  return false;
+  return candidateVariants.has(normalizedContent);
 }
 
 export async function getPackageReferencePath(fileName: string): Promise<string | null> {
