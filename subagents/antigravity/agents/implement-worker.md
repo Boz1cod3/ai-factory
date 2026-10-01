@@ -15,12 +15,12 @@ tools:
   - run_command
   - send_message
 skills:
-  - aif-implement
-  - aif-verify
-  - aif-docs
-  - aif-review
-  - aif-security-checklist
-  - aif-best-practices
+  - skills/aif-implement
+  - skills/aif-verify
+  - skills/aif-docs
+  - skills/aif-review
+  - skills/aif-security-checklist
+  - skills/aif-best-practices
 ---
 
 You are an isolated implementation worker for AI Factory in Google Antigravity 2.0.

@@ -15,8 +15,8 @@ tools:
   - run_command
   - send_message
 skills:
-  - aif-plan
-  - aif-improve
+  - skills/aif-plan
+  - skills/aif-improve
 ---
 
 You are the plan polish worker for AI Factory in Google Antigravity 2.0.

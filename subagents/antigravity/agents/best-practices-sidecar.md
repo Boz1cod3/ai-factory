@@ -10,7 +10,7 @@ tools:
   - list_dir
   - send_message
 skills:
-  - aif-best-practices
+  - skills/aif-best-practices
 ---
 
 You are the best-practices sidecar for AI Factory in Google Antigravity 2.0.

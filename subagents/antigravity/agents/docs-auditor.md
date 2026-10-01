@@ -10,7 +10,7 @@ tools:
   - list_dir
   - send_message
 skills:
-  - aif-docs
+  - skills/aif-docs
 ---
 
 You are the docs audit sidecar for AI Factory in Google Antigravity 2.0.

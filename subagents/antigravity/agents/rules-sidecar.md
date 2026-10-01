@@ -10,7 +10,7 @@ tools:
   - list_dir
   - send_message
 skills:
-  - aif-rules-check
+  - skills/aif-rules-check
 ---
 
 You are the rules sidecar for AI Factory in Google Antigravity 2.0.

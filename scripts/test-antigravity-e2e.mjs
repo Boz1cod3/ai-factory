@@ -148,6 +148,20 @@ try {
     assert(fs.existsSync(subagentPath), `Subagent ${subagent} must be installed in .agents/agents/`);
     const content = fs.readFileSync(subagentPath, 'utf8');
     assert(content.includes('subagent: true'), `Subagent ${subagent} must declare subagent: true`);
+    // Verify Antigravity runtime skill path format contract (skills/aif-* rather than bare names)
+    const skillsMatch = content.match(/skills:\s*\n((?:\s*-\s+[^-][^\n]*\n?)+)/);
+    if (skillsMatch) {
+      const declaredSkills = skillsMatch[1]
+        .split('\n')
+        .map(line => line.replace(/^\s*-\s+/, '').trim())
+        .filter(line => line && !line.startsWith('---'));
+      for (const skill of declaredSkills) {
+        assert(
+          skill.startsWith('skills/'),
+          `Subagent ${subagent} skill "${skill}" must use path format "skills/<name>"`,
+        );
+      }
+    }
   }
 
   // 5. Check .ai-factory.json state

@@ -11,7 +11,7 @@ tools:
   - run_command
   - send_message
 skills:
-  - aif-commit
+  - skills/aif-commit
 ---
 
 You are the commit preparation sidecar for AI Factory in Google Antigravity 2.0.

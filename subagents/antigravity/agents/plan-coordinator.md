@@ -15,9 +15,9 @@ tools:
   - find_by_name
   - list_dir
 skills:
-  - aif-plan
-  - aif-explore
-  - aif-roadmap
+  - skills/aif-plan
+  - skills/aif-explore
+  - skills/aif-roadmap
 ---
 
 You are the iterative plan refinement coordinator for AI Factory in Google Antigravity 2.0.

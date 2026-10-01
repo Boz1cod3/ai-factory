@@ -10,7 +10,7 @@ tools:
   - list_dir
   - send_message
 skills:
-  - aif-security-checklist
+  - skills/aif-security-checklist
 ---
 
 You are the security sidecar for AI Factory in Google Antigravity 2.0.

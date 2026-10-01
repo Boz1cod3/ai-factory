@@ -18,13 +18,13 @@ tools:
   - list_dir
   - run_command
 skills:
-  - aif-implement
-  - aif-verify
-  - aif-docs
-  - aif-commit
-  - aif-review
-  - aif-security-checklist
-  - aif-best-practices
+  - skills/aif-implement
+  - skills/aif-verify
+  - skills/aif-docs
+  - skills/aif-commit
+  - skills/aif-review
+  - skills/aif-security-checklist
+  - skills/aif-best-practices
 ---
 
 You are the parallel implementation coordinator for AI Factory in Google Antigravity 2.0.
